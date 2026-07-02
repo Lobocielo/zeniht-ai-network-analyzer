@@ -1,0 +1,8 @@
+{
+  "version": 2,
+  "name": "zeniht-ai-analyzer",
+  "routes": [
+    { "src": "/api/(.*)", "dest": "/api/$1" },
+    { "src": "/(.*)", "dest": "/$1" }
+  ]
+}
