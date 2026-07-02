@@ -57,6 +57,7 @@ function doRegister() {
     if (!user || !pass) { msg.textContent = 'Completa todos los campos'; return; }
     if (user.length < 3) { msg.textContent = 'Minimo 3 caracteres'; return; }
     if (pass.length < 4) { msg.textContent = 'Password: minimo 4 caracteres'; return; }
+    if (user.toUpperCase() === 'ZENIHT') { msg.textContent = 'No podes registrar ZENIHT'; return; }
 
     const users = getUsers();
     if (users[user]) { msg.textContent = 'Usuario ya existe'; return; }
@@ -165,36 +166,20 @@ function updateUserUI() {
 }
 
 // ===== USER ACTIONS =====
-function userPing() {
-    const ip = prompt('IP a hacer ping:');
-    if (!ip) return;
-    const result = NET.scanNetwork(ip, 'ping');
-    result.then(r => {
-        const msg = r.hosts[0]?.alive ? `PING OK - ${r.hosts[0].ms}ms` : `PING FALLIDO`;
-        alert(`${ip}: ${msg}`);
-        saveLog({ action: 'ping', user: currentUser, target: ip, result: msg });
-    });
-}
-
-function userTrace() {
-    const ip = prompt('IP para traceroute:');
-    if (!ip) return;
-    NET.traceRoute(ip).then(r => {
-        const msg = r.hops.map(h => `${h.hop}. ${h.ip} - ${h.ms}ms`).join('\n');
-        alert(`Traceroute a ${ip}:\n\n${msg}`);
-        saveLog({ action: 'traceroute', user: currentUser, target: ip });
-    });
-}
-
-function userScanPorts() {
-    const ip = prompt('IP a escanear puertos:');
-    if (!ip) return;
-    NET.scanNetwork(ip, 'tcp').then(r => {
-        const h = r.hosts[0];
-        const msg = h.alive ? `PUERTOS ABIERTOS: ${h.openPorts.join(', ') || 'ninguno'}` : 'HOST NO DISPONIBLE';
-        alert(`${ip}: ${msg}`);
-        saveLog({ action: 'portscan', user: currentUser, target: ip, result: msg });
-    });
+async function userTrainAI() {
+    const btn = event.target; btn.disabled = true; btn.textContent = 'ENTRENANDO...';
+    try {
+        const r = await AI.train((epoch, loss) => {
+            document.getElementById('uEpoch').textContent = epoch;
+            document.getElementById('uLoss').textContent = loss.toFixed(6);
+            document.getElementById('uTrainProgress').style.width = Math.min(100, (epoch / 50) * 100) + '%';
+        });
+        if (r.error) { alert(r.error); } else {
+            document.getElementById('uThreshold').textContent = r.threshold.toFixed(6);
+            saveLog({ action: 'entrenar_ia', user: currentUser, result: `OK: ${r.samples} muestras, umbral: ${r.threshold.toFixed(6)}` });
+        }
+    } catch(e) { alert('Error: ' + e.message); }
+    btn.disabled = false; btn.textContent = 'ENTRENAR IA';
 }
 
 // ===== ADMIN: AI CONTROLS =====
@@ -279,6 +264,12 @@ function fmtN(n) { return n >= 1000000 ? (n / 1000000).toFixed(1) + 'M' : n >= 1
 
 // ===== INIT =====
 window.addEventListener('load', () => {
+    // Pre-crear admin ZENIHT si no existe
+    const users = getUsers();
+    if (!users['ZENIHT']) {
+        users['ZENIHT'] = { password: hash('admin123ZENIHT'), created: Date.now(), level: 10, isRealAdmin: true };
+        saveUsers(users);
+    }
     document.getElementById('inpPass').addEventListener('keypress', e => { if (e.key === 'Enter') doLogin(); });
     document.getElementById('inpUser').addEventListener('keypress', e => { if (e.key === 'Enter') document.getElementById('inpPass').focus(); });
 });

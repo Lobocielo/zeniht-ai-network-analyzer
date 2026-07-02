@@ -90,7 +90,7 @@
     </div>
 </div>
 
-<!-- USER PANEL (solo botones basicos) -->
+<!-- USER PANEL (solo entrenar IA) -->
 <div id="userScreen" class="screen">
     <header class="hd">
         <div class="hd-l"><div class="logo-s">Z</div><div><div class="hd-t">ZENIHT AI</div><div class="hd-s" id="userInfo">Usuario</div></div></div>
@@ -98,9 +98,9 @@
     </header>
     <div class="ct">
         <div class="welcome-card">
-            <div class="wc-icon">&#x1F44B;</div>
+            <div class="wc-icon">&#x1F9E0;</div>
             <h2>Bienvenido <span id="uName"></span></h2>
-            <p>Tu cuenta esta activa. Contacta al administrador para acceder a las funciones avanzadas.</p>
+            <p>Entrena la IA para que aprenda tu red.</p>
         </div>
 
         <div class="card">
@@ -114,14 +114,13 @@
         </div>
 
         <div class="card">
-            <div class="ct-t">ACCIONES</div>
-            <div class="user-actions">
-                <button class="btn-action" onclick="userPing()">&#x1F310; Ping a IP</button>
-                <button class="btn-action" onclick="userTrace()">&#x1F9ED; Traceroute</button>
-                <button class="btn-action" onclick="userScanPorts()">&#x1F50D; Mis Puertos</button>
-                <button class="btn-action disabled">&#x1F9E0; IA (Solo Admin)</button>
-                <button class="btn-action disabled">&#x1F4CA; Dashboard (Solo Admin)</button>
-                <button class="btn-action disabled">&#x1F6E1; Blacklist (Solo Admin)</button>
+            <div class="ct-t">&#x1F9E0; ENTRENAR LA IA</div>
+            <div class="ai-box">
+                <div class="ai-row"><span>Epoch:</span><b id="uEpoch">0</b></div>
+                <div class="ai-row"><span>Loss:</span><b id="uLoss">-</b></div>
+                <div class="ai-row"><span>Umbral:</span><b id="uThreshold">-</b></div>
+                <div class="ai-bar"><div class="ai-fill" id="uTrainProgress" style="width:0%"></div></div>
+                <button class="btn-main" onclick="userTrainAI()">ENTRENAR IA</button>
             </div>
         </div>
 
