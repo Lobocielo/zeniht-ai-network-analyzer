@@ -1,7 +1,0 @@
-{
-  "name": "zeniht-ai-network-analyzer",
-  "version": "15.0.0",
-  "description": "ZENIHT AI - Analizador de Red con IA en el navegador",
-  "private": true,
-  "engines": { "node": ">=18.0.0" }
-}

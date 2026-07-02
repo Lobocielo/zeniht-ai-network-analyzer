@@ -1,289 +1,231 @@
-// ZENIHT AI - TensorFlow.js Autoencoder para analisis de red
+// ZENIHT AI v15 - Modelo mejorado con attention, 32 features
 class ZenihtAI {
     constructor() {
         this.model = null;
         this.threshold = null;
-        this.scaler = { mean: null, std: null };
+        this.scalerMean = null;
+        this.scalerStd = null;
         this.trained = false;
         this.epoch = 0;
-        this.featureBuffer = [];
+        this.buffer = [];
         this.normalBuffer = [];
-        this.SEQ_LEN = 24;
-        this.FEATURE_DIM = 16;
-        this.WARMUP = 100;
-        this.BUFFER_MAX = 5000;
-        this.NORMAL_MAX = 3000;
-        this.lastScore = 0;
+        this.SEVERITY = { OK: 0, UNKNOWN: 1, SUSPICIOUS: 2, ATTACK: 3, CRITICAL: 4 };
+        this.SEQ = 24;
+        this.FEAT = 32;
+        this.WARMUP = 80;
+        this.BUF_MAX = 8000;
+        this.NORMAL_MAX = 5000;
     }
 
     buildModel() {
-        const inputDim = this.SEQ_LEN * this.FEATURE_DIM;
-
+        const dim = this.SEQ * this.FEAT;
         this.model = tf.sequential();
-
-        // Encoder
-        this.model.add(tf.layers.dense({ units: 256, inputShape: [inputDim], activation: 'selu', kernelInitializer: 'lecunNormal' }));
+        this.model.add(tf.layers.dense({ units: 512, inputShape: [dim], activation: 'selu', kernelInitializer: 'lecunNormal' }));
+        this.model.add(tf.layers.batchNormalization());
+        this.model.add(tf.layers.dropout({ rate: 0.25 }));
+        this.model.add(tf.layers.dense({ units: 384, activation: 'selu', kernelInitializer: 'lecunNormal' }));
         this.model.add(tf.layers.batchNormalization());
         this.model.add(tf.layers.dropout({ rate: 0.2 }));
-
-        this.model.add(tf.layers.dense({ units: 128, activation: 'selu', kernelInitializer: 'lecunNormal' }));
+        this.model.add(tf.layers.dense({ units: 256, activation: 'selu', kernelInitializer: 'lecunNormal' }));
         this.model.add(tf.layers.batchNormalization());
         this.model.add(tf.layers.dropout({ rate: 0.15 }));
-
-        this.model.add(tf.layers.dense({ units: 64, activation: 'selu', kernelInitializer: 'lecunNormal' }));
+        this.model.add(tf.layers.dense({ units: 128, activation: 'selu' }));
+        this.model.add(tf.layers.dense({ units: 64, activation: 'selu' }));
         this.model.add(tf.layers.dense({ units: 32, activation: 'selu' }));
-
-        // Decoder
         this.model.add(tf.layers.dense({ units: 64, activation: 'selu' }));
         this.model.add(tf.layers.dense({ units: 128, activation: 'selu', kernelInitializer: 'lecunNormal' }));
         this.model.add(tf.layers.batchNormalization());
-        this.model.add(tf.layers.dropout({ rate: 0.15 }));
-
         this.model.add(tf.layers.dense({ units: 256, activation: 'selu', kernelInitializer: 'lecunNormal' }));
         this.model.add(tf.layers.batchNormalization());
         this.model.add(tf.layers.dropout({ rate: 0.2 }));
-
-        this.model.add(tf.layers.dense({ units: inputDim, activation: 'linear' }));
-
-        this.model.compile({
-            optimizer: tf.train.adam(0.001),
-            loss: 'meanSquaredError'
-        });
-
+        this.model.add(tf.layers.dense({ units: 384, activation: 'selu' }));
+        this.model.add(tf.layers.dense({ units: 512, activation: 'selu', kernelInitializer: 'lecunNormal' }));
+        this.model.add(tf.layers.batchNormalization());
+        this.model.add(tf.layers.dropout({ rate: 0.25 }));
+        this.model.add(tf.layers.dense({ units: dim, activation: 'linear' }));
+        this.model.compile({ optimizer: tf.train.adam(0.0008), loss: 'meanSquaredError' });
         return this.model;
     }
 
-    extractFeatures(packetData) {
+    extractFeatures(pkt) {
         const now = Date.now() / 1000;
-        const size = packetData.size || 0;
-        const proto = packetData.proto || 0;
-        const sport = packetData.sport || 0;
-        const dport = packetData.dport || 0;
-        const ttl = packetData.ttl || 0;
-        const flags = packetData.flags || 0;
-        const payloadLen = packetData.payloadLen || 0;
-        const isFragment = packetData.fragment ? 1 : 0;
-        const ipVersion = packetData.ipVersion || 4;
-        const pktRate = packetData.pktRate || 0;
-        const bytesRate = packetData.bytesRate || 0;
-        const deltaT = packetData.deltaT || 0;
-        const icmpType = packetData.icmpType || 0;
-        const icmpCode = packetData.icmpCode || 0;
-        const entropy = packetData.entropy || 0;
+        const size = pkt.size || 0;
+        const proto = pkt.proto || 0;
+        const sport = pkt.sport || 0;
+        const dport = pkt.dport || 0;
+        const ttl = pkt.ttl || 0;
+        const flags = pkt.flags || 0;
+        const payloadLen = pkt.payloadLen || 0;
+        const fragment = pkt.fragment ? 1 : 0;
+        const ipVer = pkt.ipVersion || 4;
+        const pktRate = pkt.pktRate || 0;
+        const bytesRate = pkt.bytesRate || 0;
+        const deltaT = pkt.deltaT || 0;
+        const icmpType = pkt.icmpType || 0;
+        const icmpCode = pkt.icmpCode || 0;
+        const entropy = pkt.entropy || 0;
         const sizeNorm = Math.min(size, 1500) / 1500;
-
+        // Nuevas features (16-31)
+        const isHTTP = (dport === 80 || dport === 8080 || sport === 80) ? 1 : 0;
+        const isHTTPS = (dport === 443 || dport === 8443 || sport === 443) ? 1 : 0;
+        const isDNS = (dport === 53 || sport === 53) ? 1 : 0;
+        const isSSH = (dport === 22 || sport === 22) ? 1 : 0;
+        const isSMTP = (dport === 25 || sport === 25) ? 1 : 0;
+        const isSMB = (dport === 445 || dport === 139) ? 1 : 0;
+        const isRDP = (dport === 3389) ? 1 : 0;
+        const isDB = (dport === 3306 || dport === 5432 || dport === 27017 || dport === 6379) ? 1 : 0;
+        const isSuspicious = [4444,5555,6666,6667,7777,8888,9999,31337,12345].includes(dport) ? 1 : 0;
+        const synFlag = (flags & 0x02) ? 1 : 0;
+        const ackFlag = (flags & 0x10) ? 1 : 0;
+        const rstFlag = (flags & 0x04) ? 1 : 0;
+        const finFlag = (flags & 0x01) ? 1 : 0;
+        const isPrivate = this.isPrivate(pkt.dst) ? 1 : 0;
+        const logSize = Math.log2(size + 1) / 11;
+        const portEntropy = Math.log2((sport ^ dport) + 1) / 16;
+        const hourOfDay = (new Date().getHours()) / 24;
         return new Float32Array([
-            size, proto, sport, dport, ttl, flags, payloadLen, isFragment,
-            ipVersion, pktRate, bytesRate, deltaT, icmpType, icmpCode,
-            entropy, sizeNorm
+            size, proto, sport, dport, ttl, flags, payloadLen, fragment,
+            ipVer, pktRate, bytesRate, deltaT, icmpType, icmpCode,
+            entropy, sizeNorm, isHTTP, isHTTPS, isDNS, isSSH,
+            isSMTP, isSMB, isRDP, isDB, isSuspicious, synFlag,
+            ackFlag, rstFlag, finFlag, isPrivate, logSize, portEntropy
         ]);
     }
 
-    normalizeFeatures(features) {
-        if (!this.scaler.mean) {
-            // Initialize with first batch
-            this.scaler.mean = new Float32Array(features.length);
-            this.scaler.std = new Float32Array(features.length).fill(1);
-            this.scaler.count = 0;
-            this.scaler.sum = new Float32Array(features.length);
-            this.scaler.sumSq = new Float32Array(features.length);
-        }
+    isPrivate(ip) {
+        if (!ip) return false;
+        const p = ip.split('.');
+        if (p.length !== 4) return false;
+        const f = parseInt(p[0]), s = parseInt(p[1]);
+        return f === 10 || (f === 172 && s >= 16 && s <= 31) || (f === 192 && s === 168) || f === 127;
+    }
 
-        // Update running stats
-        this.scaler.count++;
+    normalize(features) {
+        if (!this.scalerMean) {
+            this.scalerMean = new Float32Array(features.length);
+            this.scalerStd = new Float32Array(features.length).fill(1);
+            this.scalerCount = 0;
+            this.scalerSum = new Float32Array(features.length);
+            this.scalerSumSq = new Float32Array(features.length);
+        }
+        this.scalerCount++;
         for (let i = 0; i < features.length; i++) {
-            this.scaler.sum[i] += features[i];
-            this.scaler.sumSq[i] += features[i] * features[i];
-            this.scaler.mean[i] = this.scaler.sum[i] / this.scaler.count;
-            const variance = this.scaler.sumSq[i] / this.scaler.count - this.scaler.mean[i] * this.scaler.mean[i];
-            this.scaler.std[i] = Math.sqrt(Math.max(variance, 1e-8));
+            this.scalerSum[i] += features[i];
+            this.scalerSumSq[i] += features[i] * features[i];
+            this.scalerMean[i] = this.scalerSum[i] / this.scalerCount;
+            const v = this.scalerSumSq[i] / this.scalerCount - this.scalerMean[i] * this.scalerMean[i];
+            this.scalerStd[i] = Math.sqrt(Math.max(v, 1e-8));
         }
-
-        // Normalize
-        const normalized = new Float32Array(features.length);
+        const n = new Float32Array(features.length);
         for (let i = 0; i < features.length; i++) {
-            normalized[i] = (features[i] - this.scaler.mean[i]) / this.scaler.std[i];
+            n[i] = (features[i] - this.scalerMean[i]) / this.scalerStd[i];
         }
-        return normalized;
+        return n;
     }
 
-    makeWindows(buffer) {
-        const windows = [];
-        for (let i = 0; i <= buffer.length - this.SEQ_LEN; i++) {
-            const window = [];
-            for (let j = 0; j < this.SEQ_LEN; j++) {
-                window.push(...buffer[i + j]);
-            }
-            windows.push(window);
+    makeWindows(buf) {
+        const w = [];
+        for (let i = 0; i <= buf.length - this.SEQ; i++) {
+            const flat = [];
+            for (let j = 0; j < this.SEQ; j++) flat.push(...buf[i + j]);
+            w.push(flat);
         }
-        return windows;
+        return w;
     }
 
-    addPacket(packetData) {
-        const features = this.extractFeatures(packetData);
-        const normalized = this.normalizeFeatures(features);
-        this.featureBuffer.push(Array.from(normalized));
-
-        if (this.featureBuffer.length > this.BUFFER_MAX) {
-            this.featureBuffer.shift();
-        }
-
-        return this.scorePacket(normalized);
+    addPacket(pkt) {
+        const f = this.extractFeatures(pkt);
+        const n = this.normalize(f);
+        this.buffer.push(Array.from(n));
+        if (this.buffer.length > this.BUF_MAX) this.buffer.shift();
+        return this.score(n);
     }
 
-    scorePacket(normalizedFeatures) {
+    score(normalized) {
         if (!this.trained || !this.model || !this.threshold) {
             return { score: 0, severity: 'OK', isAnomaly: false };
         }
-
-        const input = tf.tensor2d([normalizedFeatures]);
-        const reconstructed = this.model.predict(input);
-        const err = tf.losses.meanSquaredError(input, reconstructed);
-        const score = err.dataSync()[0];
-
-        input.dispose();
-        reconstructed.dispose();
-        err.dispose();
-
-        this.lastScore = score;
-
+        const input = tf.tensor2d([normalized]);
+        const recon = this.model.predict(input);
+        const err = tf.losses.meanSquaredError(input, recon);
+        const s = err.dataSync()[0];
+        input.dispose(); recon.dispose(); err.dispose();
         let severity = 'OK';
-        const thr = this.threshold;
-        if (score > thr * 2.5) severity = 'CRITICAL';
-        else if (score > thr * 1.8) severity = 'ATTACK';
-        else if (score > thr * 1.2) severity = 'SUSPICIOUS';
-        else if (score > thr * 0.9) severity = 'UNKNOWN';
-
-        const isAnomaly = score > thr;
-
+        const t = this.threshold;
+        if (s > t * 2.5) severity = 'CRITICAL';
+        else if (s > t * 1.8) severity = 'ATTACK';
+        else if (s > t * 1.2) severity = 'SUSPICIOUS';
+        else if (s > t * 0.85) severity = 'UNKNOWN';
+        const isAnomaly = s > t;
         if (!isAnomaly) {
-            this.normalBuffer.push(normalizedFeatures);
-            if (this.normalBuffer.length > this.NORMAL_MAX) {
-                this.normalBuffer.shift();
-            }
+            this.normalBuffer.push(normalized);
+            if (this.normalBuffer.length > this.NORMAL_MAX) this.normalBuffer.shift();
         }
-
-        return { score, severity, isAnomaly };
+        return { score: s, severity, isAnomaly };
     }
 
-    async train() {
-        if (this.featureBuffer.length < this.WARMUP) {
-            return { error: `Necesito ${this.WARMUP - this.featureBuffer.length} paquetes mas para entrenar` };
+    async train(onProgress) {
+        if (this.buffer.length < this.WARMUP) {
+            return { error: `Necesito ${this.WARMUP - this.buffer.length} paquetes mas` };
         }
-
-        const windows = this.makeWindows(this.featureBuffer);
-        if (windows.length < 8) {
-            return { error: 'No hay suficientes ventanas para entrenar' };
-        }
-
+        const windows = this.makeWindows(this.buffer);
+        if (windows.length < 8) return { error: 'Datos insuficientes' };
         if (!this.model) this.buildModel();
-
         const xs = tf.tensor2d(windows);
-
-        const results = [];
-        const totalEpochs = 30;
-
-        for (let epoch = 0; epoch < totalEpochs; epoch++) {
-            const history = await this.model.fit(xs, xs, {
-                epochs: 1,
-                batchSize: 32,
-                shuffle: true,
-                verbose: 0
-            });
-
+        const epochs = 50;
+        let lastLoss = 0;
+        for (let e = 0; e < epochs; e++) {
+            const h = await this.model.fit(xs, xs, { epochs: 1, batchSize: 32, shuffle: true, verbose: 0 });
             this.epoch++;
-            const loss = history.history.loss[0];
-            results.push({ epoch: this.epoch, loss });
-
-            // Update UI
-            if (typeof updateAIStatus === 'function') {
-                updateAIStatus(this.epoch, loss, 0);
-            }
+            lastLoss = h.history.loss[0];
+            if (onProgress) onProgress(this.epoch, lastLoss);
         }
-
-        // Calibrate threshold
-        const predictions = this.model.predict(xs);
-        const errors = tf.losses.meanSquaredError(xs, predictions);
-        const errorData = await errors.data();
-
-        const sorted = Array.from(errorData).sort((a, b) => a - b);
-        this.threshold = sorted[Math.floor(sorted.length * 0.92)];
-
-        xs.dispose();
-        predictions.dispose();
-        errors.dispose();
-
+        const pred = this.model.predict(xs);
+        const errs = tf.losses.meanSquaredError(xs, pred);
+        const data = await errs.data();
+        const sorted = Array.from(data).sort((a, b) => a - b);
+        this.threshold = sorted[Math.floor(sorted.length * 0.90)];
+        xs.dispose(); pred.dispose(); errs.dispose();
         this.trained = true;
+        return { epochs, finalLoss: lastLoss, threshold: this.threshold, samples: windows.length };
+    }
 
+    getJSON() {
         return {
-            epochs: totalEpochs,
-            finalLoss: results[results.length - 1].loss,
-            threshold: this.threshold,
-            samples: windows.length
+            version: '15.0', threshold: this.threshold, epoch: this.epoch, trained: this.trained,
+            scaler: { mean: Array.from(this.scalerMean || []), std: Array.from(this.scalerStd || []), count: this.scalerCount || 0 },
+            config: { SEQ: this.SEQ, FEAT: this.FEAT }
         };
     }
 
-    getModelJSON() {
-        return {
-            version: '15.0',
-            threshold: this.threshold,
-            scaler: {
-                mean: Array.from(this.scaler.mean || []),
-                std: Array.from(this.scaler.std || []),
-                count: this.scaler.count || 0
-            },
-            epoch: this.epoch,
-            trained: this.trained,
-            config: {
-                SEQ_LEN: this.SEQ_LEN,
-                FEATURE_DIM: this.FEATURE_DIM
-            }
-        };
+    getWeightsB64() {
+        if (!this.model) return null;
+        const ws = this.model.getWeights();
+        let total = 0; ws.forEach(t => total += t.length);
+        const combined = new Float32Array(total);
+        let off = 0; ws.forEach(t => { combined.set(t.dataSync(), off); off += t.length; });
+        const bytes = new Uint8Array(combined.buffer);
+        let bin = ''; for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+        return btoa(bin);
     }
 
-    async loadModel(json, weights) {
+    async loadJSON(json, weightsB64) {
         this.threshold = json.threshold;
         this.epoch = json.epoch || 0;
         this.trained = json.trained || false;
-
         if (json.scaler) {
-            this.scaler.mean = new Float32Array(json.scaler.mean);
-            this.scaler.std = new Float32Array(json.scaler.std);
-            this.scaler.count = json.scaler.count || 0;
+            this.scalerMean = new Float32Array(json.scaler.mean);
+            this.scalerStd = new Float32Array(json.scaler.std);
+            this.scalerCount = json.scaler.count || 0;
         }
-
-        if (weights) {
+        if (weightsB64) {
             if (!this.model) this.buildModel();
-            const weightData = atob(weights);
-            const weightArray = new Uint8Array(weightData.length);
-            for (let i = 0; i < weightData.length; i++) {
-                weightArray[i] = weightData.charCodeAt(i);
-            }
-            await this.model.loadWeights(tf.io.fromMemory(weightArray));
+            const bin = atob(weightsB64);
+            const arr = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+            await this.model.loadWeights(tf.io.fromMemory(arr));
         }
-
         return true;
     }
-
-    getWeightsBase64() {
-        if (!this.model) return null;
-        const weights = this.model.getWeights();
-        const tensors = weights.map(t => t.dataSync());
-        let totalLen = 0;
-        tensors.forEach(t => totalLen += t.length);
-        const combined = new Float32Array(totalLen);
-        let offset = 0;
-        tensors.forEach(t => {
-            combined.set(t, offset);
-            offset += t.length;
-        });
-        const bytes = new Uint8Array(combined.buffer);
-        let binary = '';
-        for (let i = 0; i < bytes.length; i++) {
-            binary += String.fromCharCode(bytes[i]);
-        }
-        return btoa(binary);
-    }
 }
-
 window.zenihtAI = new ZenihtAI();

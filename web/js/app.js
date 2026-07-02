@@ -1,350 +1,284 @@
-// ZENIHT AI - App principal con botones funcionando
-let currentUser = null;
-let token = null;
+// ZENIHT AI v15 - App con admin ZENIHT y usuarios limitados
 const AI = window.zenihtAI;
 const NET = window.networkMonitor;
+let currentUser = null;
+let isAdmin = false;
+
+// ===== STORAGE =====
+function getUsers() { return JSON.parse(localStorage.getItem('zh_users') || '{}'); }
+function saveUsers(u) { localStorage.setItem('zh_users', JSON.stringify(u)); }
+function getLogs() { return JSON.parse(localStorage.getItem('zh_logs') || '[]'); }
+function saveLog(log) {
+    const logs = getLogs();
+    logs.push({ ...log, time: new Date().toISOString() });
+    if (logs.length > 200) logs.splice(0, logs.length - 200);
+    localStorage.setItem('zh_logs', JSON.stringify(logs));
+}
+function hash(s) { let h = 0; for (let i = 0; i < s.length; i++) { h = ((h << 5) - h) + s.charCodeAt(i); h |= 0; } return 'h' + Math.abs(h).toString(36); }
 
 // ===== AUTH =====
 function doLogin() {
-    const user = document.getElementById('authUser').value.trim();
-    const pass = document.getElementById('authPass').value;
-    const err = document.getElementById('authError');
+    const user = document.getElementById('inpUser').value.trim();
+    const pass = document.getElementById('inpPass').value;
+    const msg = document.getElementById('authMsg');
+    if (!user || !pass) { msg.textContent = 'Completa todos los campos'; return; }
 
-    if (!user || !pass) { err.textContent = 'Completa todos los campos'; return; }
+    const users = getUsers();
+    if (!users[user]) { msg.textContent = 'Usuario no registrado'; return; }
+    if (users[user].password !== hash(pass + user)) { msg.textContent = 'Password incorrecto'; return; }
 
-    const users = JSON.parse(localStorage.getItem('zeniht_users') || '{}');
-    if (!users[user]) { err.textContent = 'Usuario no registrado'; return; }
+    currentUser = user;
+    isAdmin = (user.toUpperCase() === 'ZENIHT');
 
-    const hash = simpleHash(pass + user);
-    if (users[user].password !== hash) { err.textContent = 'Password incorrecto'; return; }
+    saveLog({ action: 'login', user, ip: 'browser', admin: isAdmin });
 
-    currentUser = users[user];
-    currentUser.username = user;
-    token = btoa(user + ':' + Date.now());
-    localStorage.setItem('zeniht_token', token);
-    err.textContent = '';
-    showDashboard();
+    if (isAdmin) {
+        document.getElementById('authScreen').classList.remove('active');
+        document.getElementById('adminScreen').classList.add('active');
+        document.getElementById('adminInfo').textContent = `Admin | ${new Date().toLocaleDateString('es-AR')}`;
+        NET.start();
+        AI.buildModel();
+        startAdminUI();
+    } else {
+        document.getElementById('authScreen').classList.remove('active');
+        document.getElementById('userScreen').classList.add('active');
+        document.getElementById('uName').textContent = user;
+        document.getElementById('userInfo').textContent = `Usuario: ${user}`;
+        NET.start();
+        startUserUI();
+    }
+    msg.textContent = '';
 }
 
 function doRegister() {
-    const user = document.getElementById('authUser').value.trim();
-    const pass = document.getElementById('authPass').value;
-    const err = document.getElementById('authError');
+    const user = document.getElementById('inpUser').value.trim();
+    const pass = document.getElementById('inpPass').value;
+    const msg = document.getElementById('authMsg');
+    if (!user || !pass) { msg.textContent = 'Completa todos los campos'; return; }
+    if (user.length < 3) { msg.textContent = 'Minimo 3 caracteres'; return; }
+    if (pass.length < 4) { msg.textContent = 'Password: minimo 4 caracteres'; return; }
 
-    if (!user || !pass) { err.textContent = 'Completa todos los campos'; return; }
-    if (user.length < 3) { err.textContent = 'Usuario: minimo 3 caracteres'; return; }
-    if (pass.length < 4) { err.textContent = 'Password: minimo 4 caracteres'; return; }
+    const users = getUsers();
+    if (users[user]) { msg.textContent = 'Usuario ya existe'; return; }
 
-    const users = JSON.parse(localStorage.getItem('zeniht_users') || '{}');
-    if (users[user]) { err.textContent = 'Usuario ya existe'; return; }
+    users[user] = { password: hash(pass + user), created: Date.now(), level: 1 };
+    saveUsers(users);
 
-    users[user] = {
-        password: simpleHash(pass + user),
-        created: Date.now(),
-        packets_analyzed: 0,
-        threats_found: 0,
-        level: 1,
-        xp: 0
-    };
-    localStorage.setItem('zeniht_users', JSON.stringify(users));
-
-    currentUser = users[user];
-    currentUser.username = user;
-    token = btoa(user + ':' + Date.now());
-    localStorage.setItem('zeniht_token', token);
-    err.textContent = '';
-    showDashboard();
+    saveLog({ action: 'register', user, ip: 'browser', by: currentUser || 'sistema' });
+    msg.textContent = 'Cuenta creada! Ahora podes entrar.';
+    msg.style.color = 'var(--ok)';
+    setTimeout(() => { msg.style.color = ''; }, 3000);
 }
 
 function doLogout() {
-    localStorage.removeItem('zeniht_token');
-    currentUser = null;
-    token = null;
+    saveLog({ action: 'logout', user: currentUser });
+    currentUser = null; isAdmin = false;
     NET.stop();
-    document.getElementById('dashboardScreen').classList.remove('active');
+    ['adminScreen', 'userScreen'].forEach(id => document.getElementById(id).classList.remove('active'));
     document.getElementById('authScreen').classList.add('active');
 }
 
-function simpleHash(str) {
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-        const char = str.charCodeAt(i);
-        hash = ((hash << 5) - hash) + char;
-        hash |= 0;
-    }
-    return 'h_' + Math.abs(hash).toString(36);
+// ===== ADMIN UI =====
+let adminInterval = null;
+function startAdminUI() {
+    if (adminInterval) return;
+    adminInterval = setInterval(updateAdminUI, 2000);
+    updateAdminUI();
 }
 
-function showDashboard() {
-    document.getElementById('authScreen').classList.remove('active');
-    document.getElementById('dashboardScreen').classList.add('active');
-    document.getElementById('headerStatus').textContent = 'Usuario: ' + currentUser.username;
-    NET.start();
-    AI.buildModel();
-    startUIUpdate();
-}
-
-// ===== UI UPDATE =====
-let uiInterval = null;
-function startUIUpdate() {
-    if (uiInterval) return;
-    uiInterval = setInterval(updateUI, 1500);
-    updateUI();
-}
-
-function updateUI() {
+function updateAdminUI() {
     const stats = NET.getStats();
-    document.getElementById('sPackets').textContent = formatNum(stats.packets);
-    document.getElementById('sAnomalies').textContent = stats.anomalies;
-    document.getElementById('sCritical').textContent = stats.critical;
-    document.getElementById('sHealth').textContent = stats.health;
+    const users = getUsers();
+    const userCount = Object.keys(users).length;
 
-    const healthEl = document.getElementById('sHealth');
-    healthEl.className = 'stat-val ' + (stats.health >= 80 ? 'ok' : stats.health >= 50 ? 'warn' : 'danger');
+    document.getElementById('aUsers').textContent = userCount;
+    document.getElementById('aPackets').textContent = fmtN(stats.packets);
+    document.getElementById('aAnomalies').textContent = stats.anomalies;
+    document.getElementById('aHealth').textContent = stats.health;
+    const hv = document.getElementById('aHealth');
+    hv.className = 'sv ' + (stats.health >= 80 ? 'ok' : stats.health >= 50 ? 'warn' : 'danger');
 
-    const sev = AI.trained ? getThreatName(stats) : 'SAFE';
-    const badge = document.getElementById('threatBadge');
-    badge.textContent = sev;
-    badge.className = 'threat-badge threat-' + sev;
+    document.getElementById('adminInfo').textContent = `Admin | Paquetes: ${fmtN(stats.packets)} | IA: ${AI.trained ? 'Activa' : 'Esperando'}`;
 
-    document.getElementById('headerStatus').textContent =
-        AI.trained ? `IA activa | ${stats.packets} paq | Umbral: ${AI.threshold ? AI.threshold.toFixed(4) : '-'}` : `Capturando... ${stats.packets} paquetes`;
+    // Users list
+    const ul = document.getElementById('adminUsersList');
+    ul.innerHTML = Object.entries(users).map(([name, u]) => {
+        const isAdminUser = name.toUpperCase() === 'ZENIHT';
+        const created = new Date(u.created).toLocaleString('es-AR');
+        return `<div class="li"><div><div class="li-ip">${name} ${isAdminUser ? '<span class="badge b-admin">ADMIN</span>' : '<span class="badge b-info">USER</span>'}</div><div class="li-sub">Creado: ${created}</div></div></div>`;
+    }).join('') || '<div class="empty">Sin usuarios</div>';
 
-    renderHosts();
-    renderFlows();
-    renderEvents();
-}
+    // Log list
+    const logs = getLogs().slice(-20).reverse();
+    const ll = document.getElementById('adminLogList');
+    ll.innerHTML = logs.map(l => {
+        const t = new Date(l.time).toLocaleTimeString('es-AR');
+        const action = l.action === 'register' ? '<span class="badge b-info">REGISTRO</span>' : l.action === 'login' ? '<span class="badge b-ok">LOGIN</span>' : '<span class="badge b-warn">LOGOUT</span>';
+        return `<div class="li"><div><div class="li-ip">${l.user || '?'} ${action}</div><div class="li-sub">${t} | IP: ${l.ip || 'N/A'}</div></div></div>`;
+    }).join('') || '<div class="empty">Sin actividad</div>';
 
-function getThreatName(stats) {
-    if (stats.critical > 0) return 'CRITICAL';
-    if (stats.anomalies > 10) return 'HIGH';
-    if (stats.anomalies > 3) return 'MEDIUM';
-    if (stats.anomalies > 0) return 'LOW';
-    return 'SAFE';
-}
-
-function formatNum(n) {
-    if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
-    if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
-    return n;
-}
-
-// ===== RENDER =====
-function renderHosts() {
+    // Hosts
     const hosts = NET.getHosts();
-    const el = document.getElementById('hostsList');
-    if (!hosts.length) { el.innerHTML = '<div class="empty">Capturando trafico de red...</div>'; return; }
+    const hl = document.getElementById('adminHostsList');
+    hl.innerHTML = hosts.slice(0, 15).map(h => {
+        const badge = h.threatScore > 30 ? 'b-danger' : h.threatScore > 10 ? 'b-warn' : 'b-ok';
+        return `<div class="li"><div><div class="li-ip">${h.ip}</div><div class="li-sub">${h.deviceType} | ${h.country} | ${h.packets} paq | ${Array.from(h.ports || []).slice(0, 5).join(', ')}</div></div><span class="badge ${badge}">${h.threatScore.toFixed(1)}</span></div>`;
+    }).join('') || '<div class="empty">Capturando trafico...</div>';
 
-    el.innerHTML = hosts.slice(0, 15).map(h => {
-        const badge = h.threatScore > 30 ? 'badge-danger' : h.threatScore > 10 ? 'badge-warn' : 'badge-ok';
-        return `<div class="list-item">
-            <div><div class="list-ip">${h.ip}</div>
-            <div class="list-info"><span>${h.deviceType}</span><span>${h.country}</span></div></div>
-            <div style="text-align:right"><div class="badge ${badge}">${h.threatScore.toFixed(1)}</div>
-            <div class="list-info"><span>${h.packets} paq</span></div></div></div>`;
-    }).join('');
-}
-
-function renderFlows() {
+    // Flows
     const flows = NET.getFlows();
-    const el = document.getElementById('flowsList');
-    if (!flows.length) { el.innerHTML = '<div class="empty">Sin flujos activos</div>'; return; }
+    const fl = document.getElementById('adminFlowsList');
+    fl.innerHTML = flows.slice(0, 10).map(f =>
+        `<div class="fl"><div>${f.src}<br><span style="color:var(--dim)">${f.sport}</span></div><div class="fl-a">&#10132;</div><div style="text-align:right">${f.dst}<br><span style="color:var(--dim)">${f.dport} | ${f.proto}</span></div></div>`
+    ).join('') || '<div class="empty">Sin flujos</div>';
 
-    el.innerHTML = flows.slice(0, 15).map(f =>
-        `<div class="flow-row"><div><div class="list-ip">${f.src}</div><div class="list-info">${f.sport || '?'}</div></div>
-        <div class="flow-arrow">&#10132;</div>
-        <div style="text-align:right"><div class="list-ip">${f.dst}</div><div class="list-info">${f.dport} | ${f.proto}</div></div></div>`
-    ).join('');
-}
-
-function renderEvents() {
+    // Events
     const events = NET.getEvents();
-    const el = document.getElementById('eventsList');
-    if (!events.length) { el.innerHTML = '<div class="empty">Sin eventos aun</div>'; return; }
-
-    el.innerHTML = events.slice(0, 20).map(e => {
-        const cls = e.severity === 'CRITICAL' ? 'event-CRITICAL' : e.severity === 'SUSPICIOUS' ? 'event-SUSPICIOUS' : 'event-OK';
-        return `<div class="event-row"><span class="event-time">${e.time || ''}</span>
-        <span class="${cls}">[${e.severity || 'OK'}]</span>
-        <span>${e.src || ''} &#10132; ${e.dst || ''}</span></div>`;
-    }).join('');
+    const el = document.getElementById('adminEventsList');
+    el.innerHTML = events.slice(0, 15).map(e => {
+        const cls = e.severity === 'CRITICAL' ? 'ev-CRITICAL' : e.severity === 'SUSPICIOUS' ? 'ev-SUSPICIOUS' : 'ev-OK';
+        return `<div class="ev"><span class="ev-t">${e.time}</span><span class="${cls}">[${e.severity || 'OK'}]</span><span>${e.src || ''} &#10132; ${e.dst || ''}</span><span style="color:var(--dim)">${e.msg || ''}</span></div>`;
+    }).join('') || '<div class="empty">Sin eventos</div>';
 }
 
-// ===== TABS =====
-document.querySelectorAll('.tab').forEach(tab => {
-    tab.addEventListener('click', () => {
-        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-        document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-        tab.classList.add('active');
-        document.getElementById('panel-' + tab.dataset.tab).classList.add('active');
+// ===== USER UI =====
+let userInterval = null;
+function startUserUI() {
+    if (userInterval) return;
+    userInterval = setInterval(updateUserUI, 3000);
+    updateUserUI();
+}
+
+function updateUserUI() {
+    const stats = NET.getStats();
+    document.getElementById('uMyIP').textContent = stats.myIP || 'Detectando...';
+    document.getElementById('uGateway').textContent = stats.gateway || 'Detectando...';
+    document.getElementById('uConn').textContent = stats.connType || 'Detectando...';
+    document.getElementById('uPackets').textContent = fmtN(stats.packets);
+
+    const logs = getLogs().filter(l => l.user === currentUser).slice(-10).reverse();
+    const ll = document.getElementById('userLogList');
+    ll.innerHTML = logs.map(l => {
+        const t = new Date(l.time).toLocaleTimeString('es-AR');
+        return `<div class="li"><div><div class="li-ip">${l.action}</div><div class="li-sub">${t}</div></div></div>`;
+    }).join('') || '<div class="empty">Sin actividad</div>';
+}
+
+// ===== USER ACTIONS =====
+function userPing() {
+    const ip = prompt('IP a hacer ping:');
+    if (!ip) return;
+    const result = NET.scanNetwork(ip, 'ping');
+    result.then(r => {
+        const msg = r.hosts[0]?.alive ? `PING OK - ${r.hosts[0].ms}ms` : `PING FALLIDO`;
+        alert(`${ip}: ${msg}`);
+        saveLog({ action: 'ping', user: currentUser, target: ip, result: msg });
     });
-});
-
-// ===== AI CONTROLS =====
-function updateAIStatus(epoch, loss, threshold) {
-    document.getElementById('aiEpoch').textContent = epoch;
-    document.getElementById('aiLoss').textContent = typeof loss === 'number' ? loss.toFixed(6) : loss;
-    document.getElementById('aiThreshold').textContent = AI.threshold ? AI.threshold.toFixed(6) : '-';
-    document.getElementById('aiProgress').style.width = Math.min(100, (epoch / 30) * 100) + '%';
 }
 
+function userTrace() {
+    const ip = prompt('IP para traceroute:');
+    if (!ip) return;
+    NET.traceRoute(ip).then(r => {
+        const msg = r.hops.map(h => `${h.hop}. ${h.ip} - ${h.ms}ms`).join('\n');
+        alert(`Traceroute a ${ip}:\n\n${msg}`);
+        saveLog({ action: 'traceroute', user: currentUser, target: ip });
+    });
+}
+
+function userScanPorts() {
+    const ip = prompt('IP a escanear puertos:');
+    if (!ip) return;
+    NET.scanNetwork(ip, 'tcp').then(r => {
+        const h = r.hosts[0];
+        const msg = h.alive ? `PUERTOS ABIERTOS: ${h.openPorts.join(', ') || 'ninguno'}` : 'HOST NO DISPONIBLE';
+        alert(`${ip}: ${msg}`);
+        saveLog({ action: 'portscan', user: currentUser, target: ip, result: msg });
+    });
+}
+
+// ===== ADMIN: AI CONTROLS =====
 async function startTraining() {
-    const btn = event.target;
-    btn.disabled = true;
-    btn.textContent = 'Entrenando...';
-    updateAIStatus(AI.epoch, 'entrenando...', '-');
-
+    const btn = event.target; btn.disabled = true; btn.textContent = 'ENTRENANDO...';
     try {
-        const result = await AI.train();
-        if (result.error) {
-            updateAIStatus(AI.epoch, result.error, '-');
-        } else {
-            updateAIStatus(result.epochs, result.finalLoss, result.threshold);
-            NET.addEvent({
-                type: 'ai_train', severity: 'OK',
-                src: 'IA', dst: 'Modelo',
-                time: new Date().toLocaleTimeString('es-AR')
-            });
+        const r = await AI.train((epoch, loss) => {
+            document.getElementById('aEpoch').textContent = epoch;
+            document.getElementById('aLoss').textContent = loss.toFixed(6);
+            document.getElementById('aProgress').style.width = Math.min(100, (epoch / 50) * 100) + '%';
+        });
+        if (r.error) { alert(r.error); } else {
+            document.getElementById('aThreshold').textContent = r.threshold.toFixed(6);
+            NET.addEvent({ type: 'ai', severity: 'OK', src: 'IA', dst: 'Modelo', msg: `Entrenado: ${r.samples} muestras, umbral: ${r.threshold.toFixed(6)}` });
         }
-    } catch(e) {
-        updateAIStatus(AI.epoch, 'Error: ' + e.message, '-');
-    }
-
-    btn.disabled = false;
-    btn.textContent = 'Entrenar';
+    } catch(e) { alert('Error: ' + e.message); }
+    btn.disabled = false; btn.textContent = 'ENTRENAR';
 }
 
 async function saveModelGithub() {
-    const owner = prompt('GitHub username (owner del repo):');
-    if (!owner) return;
-    const repo = prompt('Nombre del repo (debe existir):');
-    if (!repo) return;
-    const token = prompt('GitHub Personal Access Token:');
-    if (!token) return;
-
-    const data = {
-        ...AI.getModelJSON(),
-        weights: AI.getWeightsBase64(),
-        saved_at: new Date().toISOString(),
-        saved_by: currentUser ? currentUser.username : 'unknown'
-    };
-
-    const btn = event.target;
-    btn.disabled = true;
-    btn.textContent = 'Guardando...';
-
+    const owner = prompt('GitHub username:'); if (!owner) return;
+    const repo = prompt('Nombre del repo:'); if (!repo) return;
+    const token = prompt('GitHub token:'); if (!token) return;
+    const data = { ...AI.getJSON(), weights: AI.getWeightsB64(), saved_at: new Date().toISOString(), saved_by: currentUser };
     try {
         const url = `https://api.github.com/repos/${owner}/${repo}/contents/models/zeniht_model.json`;
         let sha = null;
-        try {
-            const existing = await fetch(url);
-            if (existing.ok) {
-                const json = await existing.json();
-                sha = json.sha;
-            }
-        } catch(e) {}
-
-        const body = {
-            message: `ZENIHT AI model update - ${new Date().toISOString()}`,
-            content: btoa(unescape(encodeURIComponent(JSON.stringify(data, null, 2))))
-        };
+        try { const e = await fetch(url); if (e.ok) { const j = await e.json(); sha = j.sha; } } catch(e) {}
+        const body = { message: `ZENIHT model ${new Date().toISOString()}`, content: btoa(unescape(encodeURIComponent(JSON.stringify(data)))) };
         if (sha) body.sha = sha;
-
-        const res = await fetch(url, {
-            method: 'PUT',
-            headers: { 'Authorization': `token ${token}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify(body)
-        });
-
-        if (res.ok) {
-            alert('Modelo guardado en GitHub! 🎉');
-            NET.addEvent({ type: 'model_save', severity: 'OK', src: 'IA', dst: `github.com/${owner}/${repo}`, time: new Date().toLocaleTimeString('es-AR') });
-        } else {
-            const err = await res.json();
-            alert('Error: ' + (err.message || 'No se pudo guardar'));
-        }
-    } catch(e) {
-        alert('Error de conexion: ' + e.message);
-    }
-
-    btn.disabled = false;
-    btn.textContent = 'Guardar en GitHub';
+        const res = await fetch(url, { method: 'PUT', headers: { 'Authorization': `token ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        if (res.ok) { alert('Modelo guardado en GitHub!'); NET.addEvent({ type: 'save', severity: 'OK', src: 'IA', dst: `github.com/${owner}/${repo}`, msg: 'Modelo guardado' }); }
+        else { const err = await res.json(); alert('Error: ' + err.message); }
+    } catch(e) { alert('Error: ' + e.message); }
 }
 
 async function loadModelGithub() {
-    const owner = prompt('GitHub username (owner del repo):');
-    if (!owner) return;
-    const repo = prompt('Nombre del repo:');
-    if (!repo) return;
-
-    const btn = event.target;
-    btn.disabled = true;
-    btn.textContent = 'Cargando...';
-
+    const owner = prompt('GitHub username:'); if (!owner) return;
+    const repo = prompt('Nombre del repo:'); if (!repo) return;
     try {
         const url = `https://api.github.com/repos/${owner}/${repo}/contents/models/zeniht_model.json`;
         const res = await fetch(url);
         if (!res.ok) throw new Error('No encontrado');
-
         const json = await res.json();
         const content = decodeURIComponent(escape(atob(json.content)));
         const data = JSON.parse(content);
-
-        await AI.loadModel(data, data.weights);
-        updateAIStatus(AI.epoch, 'Cargado', AI.threshold);
-        alert('Modelo cargado de GitHub! 🎉');
-        NET.addEvent({ type: 'model_load', severity: 'OK', src: `github.com/${owner}/${repo}`, dst: 'IA', time: new Date().toLocaleTimeString('es-AR') });
-    } catch(e) {
-        alert('Error: ' + e.message);
-    }
-
-    btn.disabled = false;
-    btn.textContent = 'Cargar de GitHub';
+        await AI.loadJSON(data, data.weights);
+        document.getElementById('aEpoch').textContent = AI.epoch;
+        document.getElementById('aThreshold').textContent = AI.threshold?.toFixed(6) || '-';
+        alert('Modelo cargado de GitHub!');
+        NET.addEvent({ type: 'load', severity: 'OK', src: `github`, dst: 'IA', msg: 'Modelo cargado' });
+    } catch(e) { alert('Error: ' + e.message); }
 }
 
-// ===== SCAN =====
-async function startScan() {
+// ===== ADMIN: SCAN =====
+async function doScan() {
     const target = document.getElementById('scanTarget').value.trim();
     const type = document.getElementById('scanType').value;
-    const resultsEl = document.getElementById('scanResults');
-
-    if (!target) { resultsEl.innerHTML = '<div class="empty">Ingresa una IP o subred</div>'; return; }
-
-    resultsEl.innerHTML = '<div class="empty">Escaneando ' + target + '...</div>';
+    const el = document.getElementById('scanResults');
+    if (!target) { el.innerHTML = '<div class="empty">Ingresa una IP o subred</div>'; return; }
+    el.innerHTML = `<div class="sr">Escaneando ${target}...</div>`;
 
     if (type === 'trace') {
-        const result = await NET.traceRoute(target);
-        resultsEl.innerHTML = `<div class="scan-result"><b>Traceroute a ${result.target}</b></div>` +
-            result.hops.map(h => `<div class="scan-result">${h.hop}. ${h.ip} - ${h.ms}ms</div>`).join('');
+        const r = await NET.traceRoute(target);
+        el.innerHTML = `<div class="sr"><b>Traceroute a ${r.target}</b></div>` + r.hops.map(h => `<div class="sr">${h.hop}. ${h.ip} - ${h.ms}ms</div>`).join('');
     } else {
-        const result = await NET.scanNetwork(target, type);
-        resultsEl.innerHTML = `<div class="scan-result"><b>Escaneo ${result.type} de ${result.target}</b> - ${result.hosts.length} hosts encontrados</div>` +
-            result.hosts.map(h =>
-                `<div class="scan-result">${h.ip} - ${h.alive ? '🟢 Activo' : '🔴 Inactivo'} - Latencia: ${h.latency ? h.latency + 'ms' : 'N/A'} - Puertos: ${h.openPorts.join(', ') || 'ninguno'}</div>`
-            ).join('');
+        const r = await NET.scanNetwork(target, type);
+        el.innerHTML = `<div class="sr"><b>${r.type} de ${r.target}</b> - ${r.hosts.length} hosts</div>` +
+            r.hosts.map(h => `<div class="sr">${h.ip} - ${h.alive ? '🟢' : '🔴'} - ${h.ms ? h.ms + 'ms' : 'N/A'} - Puertos: ${h.openPorts.join(', ') || 'ninguno'}</div>`).join('');
     }
-
-    NET.addEvent({ type: 'scan', severity: 'OK', src: 'Usuario', dst: target, time: new Date().toLocaleTimeString('es-AR') });
 }
+
+// ===== TABS =====
+document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(x => x.classList.remove('active'));
+    t.classList.add('active');
+    document.getElementById('panel-' + t.dataset.tab)?.classList.add('active');
+}));
+
+function fmtN(n) { return n >= 1000000 ? (n / 1000000).toFixed(1) + 'M' : n >= 1000 ? (n / 1000).toFixed(1) + 'K' : n; }
 
 // ===== INIT =====
 window.addEventListener('load', () => {
-    const savedToken = localStorage.getItem('zeniht_token');
-    if (savedToken) {
-        const users = JSON.parse(localStorage.getItem('zeniht_users') || '{}');
-        const username = atob(savedToken).split(':')[0];
-        if (users[username]) {
-            currentUser = users[username];
-            currentUser.username = username;
-            token = savedToken;
-            showDashboard();
-        }
-    }
-
-    document.getElementById('authPass').addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') doLogin();
-    });
-    document.getElementById('authUser').addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') document.getElementById('authPass').focus();
-    });
+    document.getElementById('inpPass').addEventListener('keypress', e => { if (e.key === 'Enter') doLogin(); });
+    document.getElementById('inpUser').addEventListener('keypress', e => { if (e.key === 'Enter') document.getElementById('inpPass').focus(); });
 });

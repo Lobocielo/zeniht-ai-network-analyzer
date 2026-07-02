@@ -11,148 +11,130 @@
 </head>
 <body>
 
-    <!-- LOGIN / REGISTER -->
-    <div id="authScreen" class="screen active">
-        <div class="auth-container">
-            <div class="auth-logo">
-                <div class="logo-icon">Z</div>
-                <h1>ZENIHT AI</h1>
-                <p>Analizador de Red con IA</p>
-            </div>
-            <div id="authForm">
-                <div class="input-group">
-                    <input type="text" id="authUser" placeholder="Usuario" autocomplete="username">
-                </div>
-                <div class="input-group">
-                    <input type="password" id="authPass" placeholder="Password" autocomplete="current-password">
-                </div>
-                <button class="btn-primary" id="btnLogin" onclick="doLogin()">Entrar</button>
-                <button class="btn-secondary" id="btnRegister" onclick="doRegister()">Crear Cuenta</button>
-                <div id="authError" class="error-msg"></div>
-            </div>
-        </div>
+<div id="authScreen" class="screen active">
+    <div class="auth-box">
+        <div class="logo-big"><div class="logo-z">Z</div></div>
+        <h1>ZENIHT AI</h1>
+        <p class="sub">Analizador de Red con Inteligencia Artificial</p>
+        <input type="text" id="inpUser" placeholder="Usuario" autocomplete="off">
+        <input type="password" id="inpPass" placeholder="Password" autocomplete="off">
+        <button class="btn-main" onclick="doLogin()">Entrar</button>
+        <button class="btn-ghost" onclick="doRegister()">Crear Cuenta</button>
+        <div id="authMsg" class="msg"></div>
     </div>
+</div>
 
-    <!-- DASHBOARD -->
-    <div id="dashboardScreen" class="screen">
-        <header class="header">
-            <div class="header-left">
-                <div class="logo-sm">Z</div>
-                <div>
-                    <div class="header-title">ZENIHT AI</div>
-                    <div class="header-sub" id="headerStatus">Conectando...</div>
-                </div>
-            </div>
-            <div class="header-right">
-                <div class="threat-badge" id="threatBadge">SAFE</div>
-                <button class="btn-icon" onclick="doLogout()">&#x2190;</button>
-            </div>
-        </header>
+<!-- ADMIN PANEL -->
+<div id="adminScreen" class="screen">
+    <header class="hd">
+        <div class="hd-l"><div class="logo-s">Z</div><div><div class="hd-t">ZENIHT ADMIN</div><div class="hd-s" id="adminInfo">Panel de Control</div></div></div>
+        <button class="btn-out" onclick="doLogout()">&#x2190;</button>
+    </header>
+    <div class="ct">
+        <div class="stats4">
+            <div class="st"><div class="sv" id="aUsers">0</div><div class="sl">Usuarios</div></div>
+            <div class="st"><div class="sv ok" id="aPackets">0</div><div class="sl">Paquetes</div></div>
+            <div class="st"><div class="sv danger" id="aAnomalies">0</div><div class="sl">Anomalias</div></div>
+            <div class="st"><div class="sv ok" id="aHealth">100</div><div class="sl">Salud</div></div>
+        </div>
 
-        <div class="content">
-            <!-- Stats -->
-            <div class="stats-row">
-                <div class="stat-card">
-                    <div class="stat-val" id="sPackets">0</div>
-                    <div class="stat-lbl">Paquetes</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-val danger" id="sAnomalies">0</div>
-                    <div class="stat-lbl">Anomalias</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-val warn" id="sCritical">0</div>
-                    <div class="stat-lbl">Criticos</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-val ok" id="sHealth">100</div>
-                    <div class="stat-lbl">Salud</div>
-                </div>
-            </div>
+        <div class="card">
+            <div class="ct-t">USUARIOS REGISTRADOS</div>
+            <div id="adminUsersList" class="lst"></div>
+        </div>
 
-            <!-- AI Status -->
-            <div class="card">
-                <div class="card-title">&#x1F9E0; Estado del Modelo AI</div>
-                <div class="ai-status">
-                    <div class="ai-info">
-                        <span>Epoch: <b id="aiEpoch">0</b></span>
-                        <span>Loss: <b id="aiLoss">-</b></span>
-                        <span>Umbral: <b id="aiThreshold">-</b></span>
-                    </div>
-                    <div class="ai-bar">
-                        <div class="ai-bar-fill" id="aiProgress" style="width:0%"></div>
-                    </div>
-                    <div class="ai-controls">
-                        <button class="btn-sm" onclick="startTraining()">Entrenar</button>
-                        <button class="btn-sm" onclick="saveModelGithub()">Guardar en GitHub</button>
-                        <button class="btn-sm" onclick="loadModelGithub()">Cargar de GitHub</button>
-                    </div>
-                </div>
-            </div>
+        <div class="card">
+            <div class="ct-t">LOG DE ACTIVIDAD</div>
+            <div id="adminLogList" class="lst"></div>
+        </div>
 
-            <!-- Tabs -->
-            <div class="tabs">
-                <button class="tab active" data-tab="hosts">Hosts</button>
-                <button class="tab" data-tab="flows">Flujos</button>
-                <button class="tab" data-tab="networks">Redes</button>
-                <button class="tab" data-tab="events">Eventos</button>
-                <button class="tab" data-tab="scan">Escanear</button>
-            </div>
+        <div class="card">
+            <div class="ct-t">HOSTS DE RED DETECTADOS</div>
+            <div id="adminHostsList" class="lst"></div>
+        </div>
 
-            <!-- Tab: Hosts -->
-            <div class="tab-panel active" id="panel-hosts">
-                <div class="card">
-                    <div class="card-title">Hosts Detectados</div>
-                    <div id="hostsList" class="list-container"></div>
-                </div>
-            </div>
+        <div class="card">
+            <div class="ct-t">FLUJOS DE RED</div>
+            <div id="adminFlowsList" class="lst"></div>
+        </div>
 
-            <!-- Tab: Flows -->
-            <div class="tab-panel" id="panel-flows">
-                <div class="card">
-                    <div class="card-title">Flujos de Red</div>
-                    <div id="flowsList" class="list-container"></div>
-                </div>
-            </div>
+        <div class="card">
+            <div class="ct-t">EVENTOS DE SEGURIDAD</div>
+            <div id="adminEventsList" class="lst"></div>
+        </div>
 
-            <!-- Tab: Networks -->
-            <div class="tab-panel" id="panel-networks">
-                <div class="card">
-                    <div class="card-title">Redes Descubiertas</div>
-                    <div id="networksList" class="list-container"></div>
-                </div>
-            </div>
-
-            <!-- Tab: Events -->
-            <div class="tab-panel" id="panel-events">
-                <div class="card">
-                    <div class="card-title">Eventos de Seguridad</div>
-                    <div id="eventsList" class="list-container"></div>
-                </div>
-            </div>
-
-            <!-- Tab: Scan -->
-            <div class="tab-panel" id="panel-scan">
-                <div class="card">
-                    <div class="card-title">Escanear Red</div>
-                    <div class="scan-controls">
-                        <input type="text" id="scanTarget" placeholder="IP o Subred (ej: 192.168.1.0/24)">
-                        <select id="scanType">
-                            <option value="ping">Ping</option>
-                            <option value="tcp">TCP Scan</option>
-                            <option value="trace">Traceroute</option>
-                        </select>
-                        <button class="btn-primary" onclick="startScan()">Escanear</button>
-                    </div>
-                    <div id="scanResults" class="list-container"></div>
+        <div class="card">
+            <div class="ct-t">&#x1F9E0; MODELO AI</div>
+            <div class="ai-box">
+                <div class="ai-row"><span>Epoch:</span><b id="aEpoch">0</b></div>
+                <div class="ai-row"><span>Loss:</span><b id="aLoss">-</b></div>
+                <div class="ai-row"><span>Umbral:</span><b id="aThreshold">-</b></div>
+                <div class="ai-bar"><div class="ai-fill" id="aProgress" style="width:0%"></div></div>
+                <div class="btn-row">
+                    <button class="btn-s" onclick="startTraining()">ENTRENAR</button>
+                    <button class="btn-s" onclick="saveModelGithub()">GUARDAR EN GITHUB</button>
+                    <button class="btn-s" onclick="loadModelGithub()">CARGAR DE GITHUB</button>
                 </div>
             </div>
         </div>
-    </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js"></script>
-    <script src="js/ai.js"></script>
-    <script src="js/network.js"></script>
-    <script src="js/app.js"></script>
+        <div class="card">
+            <div class="ct-t">ESCANEAR RED</div>
+            <div class="scan-row">
+                <input type="text" id="scanTarget" placeholder="IP o subred (192.168.1.0/24)">
+                <select id="scanType"><option value="ping">Ping</option><option value="tcp">TCP</option><option value="trace">Traceroute</option></select>
+                <button class="btn-s" onclick="doScan()">ESCANEAR</button>
+            </div>
+            <div id="scanResults" class="lst"></div>
+        </div>
+    </div>
+</div>
+
+<!-- USER PANEL (solo botones basicos) -->
+<div id="userScreen" class="screen">
+    <header class="hd">
+        <div class="hd-l"><div class="logo-s">Z</div><div><div class="hd-t">ZENIHT AI</div><div class="hd-s" id="userInfo">Usuario</div></div></div>
+        <button class="btn-out" onclick="doLogout()">&#x2190;</button>
+    </header>
+    <div class="ct">
+        <div class="welcome-card">
+            <div class="wc-icon">&#x1F44B;</div>
+            <h2>Bienvenido <span id="uName"></span></h2>
+            <p>Tu cuenta esta activa. Contacta al administrador para acceder a las funciones avanzadas.</p>
+        </div>
+
+        <div class="card">
+            <div class="ct-t">ESTADO DE TU RED</div>
+            <div class="user-info-box">
+                <div class="ui-row"><span>Tu IP:</span><b id="uMyIP">Detectando...</b></div>
+                <div class="ui-row"><span>Gateway:</span><b id="uGateway">Detectando...</b></div>
+                <div class="ui-row"><span>Conexion:</span><b id="uConn">Detectando...</b></div>
+                <div class="ui-row"><span>Paquetes:</span><b id="uPackets">0</b></div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="ct-t">ACCIONES</div>
+            <div class="user-actions">
+                <button class="btn-action" onclick="userPing()">&#x1F310; Ping a IP</button>
+                <button class="btn-action" onclick="userTrace()">&#x1F9ED; Traceroute</button>
+                <button class="btn-action" onclick="userScanPorts()">&#x1F50D; Mis Puertos</button>
+                <button class="btn-action disabled">&#x1F9E0; IA (Solo Admin)</button>
+                <button class="btn-action disabled">&#x1F4CA; Dashboard (Solo Admin)</button>
+                <button class="btn-action disabled">&#x1F6E1; Blacklist (Solo Admin)</button>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="ct-t">LOG DE ACTIVIDAD</div>
+            <div id="userLogList" class="lst"></div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js"></script>
+<script src="js/ai.js"></script>
+<script src="js/network.js"></script>
+<script src="js/app.js"></script>
 </body>
 </html>

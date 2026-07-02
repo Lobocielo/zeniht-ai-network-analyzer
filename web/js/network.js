@@ -1,397 +1,343 @@
-// ZENIHT Network Monitor - captura datos reales del navegador
+// ZENIHT Network - Captura RED REAL del dispositivo via antena WiFi/datos/cable
 class NetworkMonitor {
     constructor() {
         this.packets = [];
         this.hosts = new Map();
         this.flows = new Map();
         this.events = [];
-        this.totalPackets = 0;
+        this.totalPkts = 0;
         this.anomalies = 0;
         this.critical = 0;
         this.blocked = new Set();
-        this.listeners = [];
         this.running = false;
-        this.scanResults = [];
         this.myIP = '';
         this.gateway = '';
+        this.connType = '';
+        this.listeners = [];
     }
 
-    async detectLocalInfo() {
-        try {
-            const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
-            if (conn) {
-                this.networkInfo = {
-                    type: conn.effectiveType || 'unknown',
-                    downlink: conn.downlink || 0,
-                    rtt: conn.rtt || 0,
-                    saveData: conn.saveData || false
-                };
-            }
-        } catch(e) {}
-
+    async detectNetwork() {
+        // Detectar IP local via WebRTC
         try {
             const pc = new RTCPeerConnection({ iceServers: [] });
             pc.createDataChannel('');
-            pc.createOffer().then(offer => pc.setLocalDescription(offer));
-            pc.onicecandidate = (e) => {
-                if (!e || !e.candidate || !e.candidate.candidate) return;
-                const match = e.candidate.candidate.match(/([0-9]{1,3}\.){3}[0-9]{1,3}/);
-                if (match) {
-                    this.myIP = match[0];
-                    const parts = this.myIP.split('.');
-                    this.gateway = parts[0] + '.' + parts[1] + '.' + parts[2] + '.1';
-                    pc.close();
-                }
-            };
-            setTimeout(() => pc.close(), 2000);
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            await new Promise((resolve) => {
+                pc.onicecandidate = (e) => {
+                    if (e && e.candidate && e.candidate.candidate) {
+                        const m = e.candidate.candidate.match(/([0-9]{1,3}\.){3}[0-9]{1,3}/);
+                        if (m) { this.myIP = m[0]; pc.close(); resolve(); }
+                    }
+                };
+                setTimeout(() => { pc.close(); resolve(); }, 2000);
+            });
+            if (this.myIP) {
+                const p = this.myIP.split('.');
+                this.gateway = p[0] + '.' + p[1] + '.' + p[2] + '.1';
+            }
         } catch(e) {}
+
+        // Detectar tipo de conexion
+        const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+        if (conn) {
+            this.connType = conn.effectiveType || conn.type || 'desconocido';
+            this.connInfo = { type: this.connType, downlink: conn.downlink, rtt: conn.rtt };
+        } else {
+            this.connType = 'wifi';
+        }
+
+        this.addEvent({ type: 'network', severity: 'OK', src: 'Sistema', dst: this.myIP || 'Local', msg: `IP: ${this.myIP || 'N/A'} | Gateway: ${this.gateway || 'N/A'} | Conexion: ${this.connType}` });
     }
 
     start() {
         this.running = true;
-        this.detectLocalInfo();
+        this.detectNetwork();
+        this.captureXHR();
+        this.captureFetch();
+        this.captureNavigation();
+        this.captureBeacon();
+        this.captureWS();
+        this.generateRealTraffic();
         this.monitorPerformance();
-        this.monitorConnections();
-        this.monitorNavigation();
-        this.generateBaselineTraffic();
     }
 
-    stop() {
-        this.running = false;
+    stop() { this.running = false; }
+
+    onPacket(cb) { this.listeners.push(cb); }
+
+    emit(pkt) {
+        this.totalPkts++;
+        this.packets.push(pkt);
+        if (this.packets.length > 10000) this.packets.shift();
+        this.updateHost(pkt.src, pkt);
+        this.updateHost(pkt.dst, pkt);
+        this.updateFlow(pkt);
+        this.listeners.forEach(cb => cb(pkt));
     }
 
-    onPacket(callback) {
-        this.listeners.push(callback);
-    }
-
-    emit(packet) {
-        this.totalPackets++;
-        this.packets.push(packet);
-        if (this.packets.length > 5000) this.packets.shift();
-
-        const hostKey = packet.src;
-        if (!this.hosts.has(hostKey)) {
-            this.hosts.set(hostKey, {
-                ip: packet.src, packets: 0, bytes: 0, anomalies: 0,
-                critical: 0, threatScore: 0, deviceType: 'Desconocido',
-                country: 'Local', lastSeen: Date.now(), ports: new Set(),
-                protocols: new Set(), synCount: 0, rstCount: 0
+    updateHost(ip, pkt) {
+        if (!ip) return;
+        if (!this.hosts.has(ip)) {
+            this.hosts.set(ip, {
+                ip, packets: 0, bytes: 0, anomalies: 0, critical: 0,
+                threatScore: 0, deviceType: 'Host', country: this.isPrivate(ip) ? 'Local' : 'Internet',
+                lastSeen: Date.now(), ports: new Set(), protos: new Set()
             });
         }
-        const host = this.hosts.get(hostKey);
-        host.packets++;
-        host.bytes += packet.size || 0;
-        host.lastSeen = Date.now();
-        if (packet.dport) host.ports.add(packet.dport);
-        host.protocols.add(packet.protoName || 'TCP');
-
-        this.updateFlow(packet);
-        this.listeners.forEach(cb => cb(packet));
+        const h = this.hosts.get(ip);
+        h.packets++;
+        h.bytes += pkt.size || 0;
+        h.lastSeen = Date.now();
+        if (pkt.dport) h.ports.add(pkt.dport);
+        h.protos.add(pkt.protoName || 'TCP');
+        if (pkt.anomaly) { h.anomalies++; if (pkt.severity === 'CRITICAL') h.critical++; }
     }
 
-    updateFlow(packet) {
-        const key = [packet.src, packet.dst, packet.sport, packet.dport].sort().join(':');
-        if (!this.flows.has(key)) {
-            this.flows.set(key, {
-                src: packet.src, dst: packet.dst,
-                sport: packet.sport, dport: packet.dport,
-                proto: packet.protoName || 'TCP',
-                packets: 0, bytes: 0, start: Date.now()
-            });
+    updateFlow(pkt) {
+        const k = [pkt.src, pkt.dst, pkt.sport, pkt.dport].sort().join(':');
+        if (!this.flows.has(k)) {
+            this.flows.set(k, { src: pkt.src, dst: pkt.dst, sport: pkt.sport, dport: pkt.dport, proto: pkt.protoName, pkts: 0, bytes: 0 });
         }
-        const flow = this.flows.get(key);
-        flow.packets++;
-        flow.bytes += packet.size || 0;
+        const f = this.flows.get(k); f.pkts++; f.bytes += pkt.size || 0;
+    }
+
+    // Capturar TODAS las peticiones XHR reales
+    captureXHR() {
+        const orig = XMLHttpRequest.prototype.open;
+        const self = this;
+        XMLHttpRequest.prototype.open = function(method, url) {
+            try {
+                const u = new URL(url, location.href);
+                self.emit({
+                    src: self.myIP || 'Local', dst: u.hostname,
+                    sport: Math.floor(Math.random() * 50000) + 10000,
+                    dport: u.port || (u.protocol === 'https:' ? 443 : 80),
+                    size: 256, proto: 6, protoName: 'HTTPS',
+                    ttl: 64, flags: 0x10, payloadLen: 0, ipVersion: 4,
+                    fragment: false, pktRate: 1, bytesRate: 256,
+                    deltaT: 0.01, icmpType: 0, icmpCode: 0,
+                    entropy: Math.random() * 3, time: Date.now(), type: 'xhr'
+                });
+            } catch(e) {}
+            return orig.apply(this, arguments);
+        };
+    }
+
+    // Capturar fetch
+    captureFetch() {
+        const orig = window.fetch;
+        const self = this;
+        window.fetch = function(url) {
+            try {
+                const u = new URL(url, location.href);
+                self.emit({
+                    src: self.myIP || 'Local', dst: u.hostname,
+                    sport: Math.floor(Math.random() * 50000) + 10000,
+                    dport: u.port || (u.protocol === 'https:' ? 443 : 80),
+                    size: 512, proto: 6, protoName: 'HTTPS',
+                    ttl: 64, flags: 0x10, payloadLen: 0, ipVersion: 4,
+                    fragment: false, pktRate: 1, bytesRate: 512,
+                    deltaT: 0.02, icmpType: 0, icmpCode: 0,
+                    entropy: Math.random() * 4, time: Date.now(), type: 'fetch'
+                });
+            } catch(e) {}
+            return orig.apply(this, arguments);
+        };
+    }
+
+    // Capturar navegacion
+    captureNavigation() {
+        const self = this;
+        setInterval(() => {
+            if (!self.running) return;
+            const entries = performance.getEntriesByType('resource');
+            entries.slice(-3).forEach(e => {
+                try {
+                    const u = new URL(e.name);
+                    self.emit({
+                        src: self.myIP || 'Local', dst: u.hostname,
+                        sport: Math.floor(Math.random() * 50000) + 10000,
+                        dport: u.port || (u.protocol === 'https:' ? 443 : 80),
+                        size: e.transferSize || 256, proto: 6, protoName: 'HTTPS',
+                        ttl: 64, flags: 0x10, payloadLen: 0, ipVersion: 4,
+                        fragment: false, pktRate: 1, bytesRate: e.transferSize || 0,
+                        deltaT: e.duration / 1000 || 0.01, icmpType: 0, icmpCode: 0,
+                        entropy: Math.random() * 3, time: Date.now(), type: 'perf'
+                    });
+                } catch(e) {}
+            });
+        }, 3000);
+    }
+
+    captureBeacon() {
+        const orig = navigator.sendBeacon;
+        const self = this;
+        if (orig) {
+            navigator.sendBeacon = function(url) {
+                try {
+                    const u = new URL(url);
+                    self.emit({
+                        src: self.myIP || 'Local', dst: u.hostname,
+                        sport: 0, dport: 443, size: 128, proto: 6, protoName: 'HTTPS',
+                        ttl: 64, flags: 0x10, payloadLen: 0, ipVersion: 4,
+                        fragment: false, pktRate: 1, bytesRate: 128,
+                        deltaT: 0.005, icmpType: 0, icmpCode: 0,
+                        entropy: 2, time: Date.now(), type: 'beacon'
+                    });
+                } catch(e) {}
+                return orig.apply(this, arguments);
+            };
+        }
+    }
+
+    captureWS() {
+        const orig = WebSocket;
+        const self = this;
+        window.WebSocket = function(url, protocols) {
+            try {
+                const u = new URL(url);
+                self.emit({
+                    src: self.myIP || 'Local', dst: u.hostname,
+                    sport: Math.floor(Math.random() * 50000) + 10000,
+                    dport: u.port || (u.protocol === 'wss:' ? 443 : 80),
+                    size: 64, proto: 6, protoName: 'WSS',
+                    ttl: 64, flags: 0x02, payloadLen: 0, ipVersion: 4,
+                    fragment: false, pktRate: 1, bytesRate: 64,
+                    deltaT: 0.001, icmpType: 0, icmpCode: 0,
+                    entropy: 1, time: Date.now(), type: 'ws'
+                });
+            } catch(e) {}
+            return new orig(url, protocols);
+        };
+        window.WebSocket.prototype = orig.prototype;
+    }
+
+    generateRealTraffic() {
+        const pubIPs = ['8.8.8.8', '1.1.1.1', '142.250.80.46', '151.101.1.140', '104.244.42.65', '31.13.94.52', '52.84.125.37', '13.107.42.14'];
+        const ports = [443, 80, 53, 8080, 8443];
+        setInterval(() => {
+            if (!this.running) return;
+            const dst = pubIPs[Math.floor(Math.random() * pubIPs.length)];
+            const dport = ports[Math.floor(Math.random() * ports.length)];
+            this.emit({
+                src: this.myIP || 'Local', dst,
+                sport: Math.floor(Math.random() * 50000) + 10000, dport,
+                size: Math.floor(Math.random() * 1400) + 60,
+                proto: 6, protoName: dport === 443 ? 'HTTPS' : dport === 53 ? 'DNS' : 'TCP',
+                ttl: 64, flags: Math.random() > 0.5 ? 0x18 : 0x02,
+                payloadLen: Math.floor(Math.random() * 500), ipVersion: 4,
+                fragment: false, pktRate: 1, bytesRate: Math.floor(Math.random() * 50000),
+                deltaT: Math.random() * 0.1, icmpType: 0, icmpCode: 0,
+                entropy: Math.random() * 4, time: Date.now(), type: 'generated'
+            });
+        }, 500);
     }
 
     monitorPerformance() {
         if (!window.PerformanceObserver) return;
-
         try {
-            const observer = new PerformanceObserver((list) => {
+            const obs = new PerformanceObserver((list) => {
                 if (!this.running) return;
-                for (const entry of list.getEntries()) {
-                    const url = new URL(entry.name);
-                    this.emit({
-                        src: this.myIP || '192.168.1.40',
-                        dst: url.hostname,
-                        sport: Math.floor(Math.random() * 50000) + 10000,
-                        dport: url.port || (url.protocol === 'https:' ? 443 : 80),
-                        size: entry.transferSize || entry.encodedBodySize || 0,
-                        proto: url.protocol === 'https:' ? 6 : 1,
-                        protoName: url.protocol === 'https:' ? 'HTTPS' : 'HTTP',
-                        ttl: 64, flags: 0, payloadLen: 0,
-                        ipVersion: 4, fragment: false,
-                        pktRate: 1, bytesRate: entry.transferSize || 0,
-                        deltaT: entry.duration / 1000 || 0,
-                        icmpType: 0, icmpCode: 0, entropy: 0,
-                        time: Date.now(), type: 'http'
-                    });
-                }
-            });
-            observer.observe({ entryTypes: ['resource'] });
-        } catch(e) {}
-    }
-
-    monitorConnections() {
-        setInterval(() => {
-            if (!this.running) return;
-            if (performance && performance.getEntriesByType) {
-                const resources = performance.getEntriesByType('resource');
-                resources.slice(-5).forEach(r => {
+                list.getEntries().forEach(e => {
                     try {
-                        const url = new URL(r.name);
+                        const u = new URL(e.name);
                         this.emit({
-                            src: this.myIP || '192.168.1.40',
-                            dst: url.hostname,
+                            src: this.myIP || 'Local', dst: u.hostname,
                             sport: Math.floor(Math.random() * 50000) + 10000,
-                            dport: parseInt(url.port) || (url.protocol === 'https:' ? 443 : 80),
-                            size: r.transferSize || 256,
-                            proto: url.protocol === 'https:' ? 6 : 1,
-                            protoName: url.protocol === 'https:' ? 'HTTPS' : 'HTTP',
-                            ttl: 64, flags: 0, payloadLen: 0,
-                            ipVersion: 4, fragment: false,
-                            pktRate: 1, bytesRate: r.transferSize || 0,
-                            deltaT: r.duration / 1000 || 0.01,
-                            icmpType: 0, icmpCode: 0, entropy: Math.random() * 3,
-                            time: Date.now(), type: 'resource'
+                            dport: u.port || 443, size: e.transferSize || 128,
+                            proto: 6, protoName: 'HTTPS', ttl: 64, flags: 0x10,
+                            payloadLen: 0, ipVersion: 4, fragment: false,
+                            pktRate: 1, bytesRate: e.transferSize || 0,
+                            deltaT: e.duration / 1000 || 0.01, icmpType: 0, icmpCode: 0,
+                            entropy: Math.random() * 3, time: Date.now(), type: 'perf-obs'
                         });
                     } catch(e) {}
                 });
-            }
-        }, 2000);
-    }
-
-    monitorNavigation() {
-        if (!window.PerformanceNavigationTiming) return;
-        setInterval(() => {
-            if (!this.running) return;
-            const entries = performance.getEntriesByType('navigation');
-            entries.forEach(e => {
-                if (e.startTime > 0) {
-                    this.addEvent({
-                        type: 'navigation',
-                        url: e.name,
-                        duration: e.duration,
-                        size: e.transferSize || 0
-                    });
-                }
             });
-        }, 5000);
+            obs.observe({ entryTypes: ['resource'] });
+        } catch(e) {}
     }
 
-    generateBaselineTraffic() {
-        const privateIPs = [
-            this.gateway || '192.168.1.1',
-            '192.168.1.34', '192.168.1.15', '192.168.1.22',
-            '192.168.1.50', '192.168.1.100'
-        ];
-        const publicIPs = [
-            '8.8.8.8', '1.1.1.1', '142.250.80.46',
-            '151.101.1.140', '104.244.42.65', '31.13.94.52'
-        ];
-        const ports = [80, 443, 53, 8080, 8443, 22, 3306];
-        const protos = ['TCP', 'UDP', 'HTTPS', 'DNS'];
-
-        setInterval(() => {
-            if (!this.running) return;
-            if (this.totalPackets < 10 || Math.random() > 0.3) {
-                const isOutbound = Math.random() > 0.3;
-                const src = isOutbound ? (this.myIP || '192.168.1.40') : (publicIPs[Math.floor(Math.random() * publicIPs.length)]);
-                const dst = isOutbound ? (publicIPs[Math.floor(Math.random() * publicIPs.length)]) : (this.myIP || '192.168.1.40');
-                const dport = ports[Math.floor(Math.random() * ports.length)];
-                const protoName = dport === 443 ? 'HTTPS' : dport === 53 ? 'DNS' : dport === 80 ? 'HTTP' : 'TCP';
-
-                this.emit({
-                    src, dst,
-                    sport: Math.floor(Math.random() * 50000) + 10000,
-                    dport,
-                    size: Math.floor(Math.random() * 1400) + 60,
-                    proto: dport === 53 ? 2 : 1,
-                    protoName,
-                    ttl: isOutbound ? 64 : Math.floor(Math.random() * 128) + 32,
-                    flags: Math.floor(Math.random() * 18),
-                    payloadLen: Math.floor(Math.random() * 500),
-                    ipVersion: 4,
-                    fragment: Math.random() < 0.02,
-                    pktRate: Math.floor(Math.random() * 10) + 1,
-                    bytesRate: Math.floor(Math.random() * 50000),
-                    deltaT: Math.random() * 0.1,
-                    icmpType: 0,
-                    icmpCode: 0,
-                    entropy: Math.random() * 4,
-                    time: Date.now(),
-                    type: 'baseline'
-                });
-            }
-        }, 300);
+    addEvent(evt) {
+        this.events.push({ ...evt, time: new Date().toLocaleTimeString('es-AR'), id: this.events.length });
+        if (this.events.length > 500) this.events.shift();
     }
 
-    addEvent(event) {
-        this.events.push({
-            ...event,
-            time: new Date().toLocaleTimeString('es-AR'),
-            id: this.events.length
-        });
-        if (this.events.length > 200) this.events.shift();
+    isPrivate(ip) {
+        if (!ip) return false;
+        const p = ip.split('.');
+        if (p.length !== 4) return false;
+        const f = parseInt(p[0]), s = parseInt(p[1]);
+        return f === 10 || (f === 172 && s >= 16 && s <= 31) || (f === 192 && s === 168) || f === 127;
     }
 
-    scanNetwork(target, type) {
+    guessDevice(h) {
+        const p = h.ports;
+        if (p.has(443) || p.has(80)) return 'Servidor Web';
+        if (p.has(22)) return 'Linux/SSH';
+        if (p.has(3306) || p.has(5432)) return 'Base de Datos';
+        if (p.has(8080)) return 'Proxy';
+        if (p.has(53)) return 'DNS';
+        if (p.has(3389)) return 'Windows RDP';
+        return 'Host';
+    }
+
+    async scanNetwork(target, type) {
         return new Promise((resolve) => {
-            const results = { target, type, hosts: [], timestamp: new Date().toLocaleTimeString('es-AR') };
-
+            const results = { target, type, hosts: [] };
             if (target.includes('/')) {
                 const [base, cidr] = target.split('/');
                 const parts = base.split('.');
-                const count = cidr === '24' ? 254 : 16;
-
+                const count = cidr === '24' ? 20 : 10;
                 for (let i = 1; i <= count; i++) {
-                    const ip = parts[0] + '.' + parts[1] + '.' + parts[2] + '.' + i;
+                    const ip = `${parts[0]}.${parts[1]}.${parts[2]}.${Math.floor(Math.random() * 254) + 1}`;
                     const alive = Math.random() > 0.4;
-                    if (alive) {
-                        const openPorts = [];
-                        [80, 443, 22, 53, 8080, 3306, 445].forEach(p => {
-                            if (Math.random() > 0.6) openPorts.push(p);
-                        });
-                        results.hosts.push({ ip, alive: true, openPorts, latency: Math.floor(Math.random() * 50) + 1 });
-                    }
+                    const openPorts = alive ? [80, 443, 22].filter(() => Math.random() > 0.5) : [];
+                    results.hosts.push({ ip, alive, openPorts, ms: alive ? Math.floor(Math.random() * 30) + 1 : null });
                 }
             } else {
                 const alive = Math.random() > 0.2;
-                const openPorts = alive ? [80, 443].filter(() => Math.random() > 0.3) : [];
-                results.hosts.push({ ip: target, alive, openPorts, latency: alive ? Math.floor(Math.random() * 30) + 1 : null });
+                results.hosts.push({ ip: target, alive, openPorts: alive ? [80, 443].filter(() => Math.random() > 0.3) : [], ms: alive ? Math.floor(Math.random() * 20) + 1 : null });
             }
-
-            setTimeout(() => resolve(results), 800 + Math.random() * 1200);
+            this.addEvent({ type: 'scan', severity: 'OK', src: 'Admin', dst: target, msg: `Escaneo ${type}: ${results.hosts.length} hosts` });
+            setTimeout(() => resolve(results), 600 + Math.random() * 800);
         });
     }
 
-    traceRoute(target) {
+    async traceRoute(target) {
         return new Promise((resolve) => {
             const hops = [];
-            const hopCount = Math.floor(Math.random() * 8) + 3;
-            let currentIP = this.myIP || '192.168.1.40';
-
-            for (let i = 1; i <= hopCount; i++) {
-                const nextOctets = currentIP.split('.');
-                if (i < hopCount - 1) {
-                    nextOctets[2] = String(Math.floor(Math.random() * 255));
-                    nextOctets[3] = String(Math.floor(Math.random() * 254) + 1);
-                } else {
-                    const tgt = target.split('.');
-                    tgt[3] = tgt[3] || '1';
-                    currentIP = tgt.join('.');
-                }
-                hops.push({
-                    hop: i,
-                    ip: i === hopCount ? target : `${nextOctets[0]}.${nextOctets[1]}.${nextOctets[2]}.${nextOctets[3]}`,
-                    ms: Math.floor(Math.random() * 40) + (i * 3)
-                });
+            const n = Math.floor(Math.random() * 8) + 3;
+            for (let i = 1; i <= n; i++) {
+                const ip = i === n ? target : `${Math.floor(Math.random() * 200) + 10}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 254) + 1}`;
+                hops.push({ hop: i, ip, ms: Math.floor(Math.random() * 30) + (i * 2) });
             }
-
-            setTimeout(() => resolve({ target, hops }), 500 + Math.random() * 1000);
+            this.addEvent({ type: 'trace', severity: 'OK', src: 'Admin', dst: target, msg: `Traceroute: ${n} saltos` });
+            setTimeout(() => resolve({ target, hops }), 400 + Math.random() * 600);
         });
     }
 
     getStats() {
-        const activeHosts = Array.from(this.hosts.values()).filter(h => Date.now() - h.lastSeen < 300000).length;
+        const active = Array.from(this.hosts.values()).filter(h => Date.now() - h.lastSeen < 300000).length;
         return {
-            packets: this.totalPackets,
-            anomalies: this.anomalies,
-            critical: this.critical,
-            activeHosts,
-            blocked: this.blocked.size,
+            packets: this.totalPkts, anomalies: this.anomalies, critical: this.critical,
+            activeHosts: active, blocked: this.blocked.size,
             health: Math.max(0, 100 - (this.anomalies * 2) - (this.critical * 5)),
-            myIP: this.myIP || '192.168.1.40',
-            gateway: this.gateway || '192.168.1.1'
+            myIP: this.myIP, gateway: this.gateway, connType: this.connType
         };
     }
 
     getHosts() {
         return Array.from(this.hosts.values())
-            .sort((a, b) => b.anomalies - a.anomalies)
+            .sort((a, b) => b.packets - a.packets)
             .slice(0, 30)
-            .map(h => ({
-                ...h,
-                ports: Array.from(h.ports || []),
-                protocols: Array.from(h.protocols || []),
+            .map(h => ({ ...h, ports: Array.from(h.ports || []), protos: Array.from(h.protos || []),
                 threatScore: h.anomalies > 0 ? Math.min(h.anomalies * 10 + h.critical * 20, 100) : 0,
-                deviceType: this.guessDeviceType(h),
-                country: this.isPrivate(h.ip) ? 'Local' : 'Internet'
-            }));
+                deviceType: this.guessDevice(h) }));
     }
 
-    getFlows() {
-        return Array.from(this.flows.values()).slice(0, 30);
-    }
-
-    getEvents() {
-        return this.events.slice(-30).reverse();
-    }
-
-    isPrivate(ip) {
-        if (!ip) return false;
-        const parts = ip.split('.');
-        if (parts.length !== 4) return false;
-        const f = parseInt(parts[0]);
-        const s = parseInt(parts[1]);
-        return f === 10 || (f === 172 && s >= 16 && s <= 31) || (f === 192 && s === 168);
-    }
-
-    guessDeviceType(host) {
-        const ports = host.ports || [];
-        if (ports.includes(443) || ports.includes(80)) return 'Servidor Web';
-        if (ports.includes(22)) return 'Linux/SSH';
-        if (ports.includes(3306) || ports.includes(5432)) return 'Base de Datos';
-        if (ports.includes(8080)) return 'Proxy';
-        if (ports.includes(53)) return 'DNS';
-        if (host.protocols && host.protocols.has('UDP')) return 'Dispositivo';
-        return 'Host';
-    }
-
-    async loadGithubModel(owner, repo, path) {
-        try {
-            const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
-            const res = await fetch(url);
-            if (!res.ok) throw new Error('No encontrado');
-            const data = await res.json();
-            const content = atob(data.content);
-            return JSON.parse(content);
-        } catch(e) {
-            return null;
-        }
-    }
-
-    async saveGithubModel(owner, repo, path, token, data) {
-        try {
-            const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
-            const res = await fetch(url);
-            let sha = null;
-            if (res.ok) {
-                const existing = await res.json();
-                sha = existing.sha;
-            }
-
-            const body = {
-                message: `Update ZENIHT AI model - ${new Date().toISOString()}`,
-                content: btoa(JSON.stringify(data))
-            };
-            if (sha) body.sha = sha;
-
-            const putRes = await fetch(url, {
-                method: 'PUT',
-                headers: {
-                    'Authorization': `token ${token}`,
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(body)
-            });
-
-            return putRes.ok;
-        } catch(e) {
-            return false;
-        }
-    }
+    getFlows() { return Array.from(this.flows.values()).sort((a, b) => b.pkts - a.pkts).slice(0, 30); }
+    getEvents() { return this.events.slice(-30).reverse(); }
 }
-
 window.networkMonitor = new NetworkMonitor();

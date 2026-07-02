@@ -1,7 +1,3 @@
 node_modules/
 .vercel/
-android/
-www/
-.capacitor/
-
-.vercel
+.DS_Store
