@@ -71,11 +71,16 @@
                 <div class="ai-row"><span>Umbral:</span><b id="aThreshold">-</b></div>
                 <div class="ai-bar"><div class="ai-fill" id="aProgress" style="width:0%"></div></div>
                 <div class="btn-row">
-                    <button class="btn-s" onclick="startTraining()">ENTRENAR</button>
+                    <button class="btn-s" id="btnAdminTrain" onclick="startTraining()">ENTRENAR</button>
                     <button class="btn-s" onclick="saveModelGithub()">GUARDAR EN GITHUB</button>
                     <button class="btn-s" onclick="loadModelGithub()">CARGAR DE GITHUB</button>
                 </div>
             </div>
+        </div>
+
+        <div class="card">
+            <div class="ct-t">DETECCIONES EN VIVO</div>
+            <div id="adminDetectionsList" class="lst"></div>
         </div>
 
         <div class="card">
@@ -110,6 +115,15 @@
                 <div class="ui-row"><span>Gateway:</span><b id="uGateway">Detectando...</b></div>
                 <div class="ui-row"><span>Conexion:</span><b id="uConn">Detectando...</b></div>
                 <div class="ui-row"><span>Paquetes:</span><b id="uPackets">0</b></div>
+                <div class="ui-row"><span>Velocidad:</span><b id="uPktRate">0/s</b></div>
+                <div class="ui-row"><span>Bytes:</span><b id="uBytesRate">0 B/s</b></div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="ct-t">&#x1F9E0; ESTADO DE LA IA</div>
+            <div class="user-info-box">
+                <div class="ui-row"><span>Estado:</span><b id="uAIStatus" class="sv warn">APRENDIENDO...</b></div>
             </div>
         </div>
 
@@ -120,8 +134,13 @@
                 <div class="ai-row"><span>Loss:</span><b id="uLoss">-</b></div>
                 <div class="ai-row"><span>Umbral:</span><b id="uThreshold">-</b></div>
                 <div class="ai-bar"><div class="ai-fill" id="uTrainProgress" style="width:0%"></div></div>
-                <button class="btn-main" onclick="userTrainAI()">ENTRENAR IA</button>
+                <button class="btn-main" id="btnUserTrain" onclick="userTrainAI()">ENTRENAR IA</button>
             </div>
+        </div>
+
+        <div class="card">
+            <div class="ct-t">DETECCIONES DE LA IA</div>
+            <div id="uDetectionsList" class="lst"></div>
         </div>
 
         <div class="card">

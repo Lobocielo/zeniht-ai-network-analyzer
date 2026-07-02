@@ -88,7 +88,7 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(
 /* EVENT */
 .ev{padding:6px 16px;border-bottom:1px solid var(--border);font-size:11px;font-family:Consolas,monospace;display:flex;gap:6px}
 .ev-t{color:var(--dim)}
-.ev-OK{color:var(--ok)}.ev-SUSPICIOUS{color:var(--warn)}.ev-ATTACK,.ev-CRITICAL{color:var(--danger)}
+.ev-OK{color:var(--ok)}.ev-SUSPICIOUS{color:var(--warn)}.ev-UNKNOWN{color:#888}.ev-ATTACK,.ev-CRITICAL{color:var(--danger)}
 
 .empty{text-align:center;padding:30px;color:var(--dim);font-size:12px}
 ::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:var(--bg2)}::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}

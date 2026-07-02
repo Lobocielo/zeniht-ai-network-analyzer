@@ -1,4 +1,4 @@
-// ZENIHT Network - Captura RED REAL del dispositivo via antena WiFi/datos/cable
+// ZENIHT Network v16 - Captura RED REAL + envia paquetes al AI
 class NetworkMonitor {
     constructor() {
         this.packets = [];
@@ -14,10 +14,18 @@ class NetworkMonitor {
         this.gateway = '';
         this.connType = '';
         this.listeners = [];
+        this.ai = null;
+        this.detectionResults = [];
+        this.lastPktTime = 0;
+        this.pktRateCounter = 0;
+        this.pktRate = 0;
+        this.bytesRate = 0;
+        this.bytesRateCounter = 0;
     }
 
+    setAI(aiRef) { this.ai = aiRef; }
+
     async detectNetwork() {
-        // Detectar IP local via WebRTC
         try {
             const pc = new RTCPeerConnection({ iceServers: [] });
             pc.createDataChannel('');
@@ -30,7 +38,7 @@ class NetworkMonitor {
                         if (m) { this.myIP = m[0]; pc.close(); resolve(); }
                     }
                 };
-                setTimeout(() => { pc.close(); resolve(); }, 2000);
+                setTimeout(() => { try { pc.close(); } catch(e) {} resolve(); }, 2000);
             });
             if (this.myIP) {
                 const p = this.myIP.split('.');
@@ -38,7 +46,6 @@ class NetworkMonitor {
             }
         } catch(e) {}
 
-        // Detectar tipo de conexion
         const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
         if (conn) {
             this.connType = conn.effectiveType || conn.type || 'desconocido';
@@ -51,6 +58,7 @@ class NetworkMonitor {
     }
 
     start() {
+        if (this.running) return;
         this.running = true;
         this.detectNetwork();
         this.captureXHR();
@@ -60,19 +68,57 @@ class NetworkMonitor {
         this.captureWS();
         this.generateRealTraffic();
         this.monitorPerformance();
+        this.startPktRateCalc();
     }
 
     stop() { this.running = false; }
 
+    startPktRateCalc() {
+        setInterval(() => {
+            this.pktRate = this.pktRateCounter;
+            this.bytesRate = this.bytesRateCounter;
+            this.pktRateCounter = 0;
+            this.bytesRateCounter = 0;
+        }, 1000);
+    }
+
     onPacket(cb) { this.listeners.push(cb); }
 
     emit(pkt) {
+        const now = Date.now();
         this.totalPkts++;
+        this.pktRateCounter++;
+        this.bytesRateCounter += pkt.size || 0;
+        pkt.deltaT = this.lastPktTime ? (now - this.lastPktTime) / 1000 : 0.01;
+        pkt.pktRate = this.pktRate;
+        pkt.bytesRate = this.bytesRate;
+        this.lastPktTime = now;
+
         this.packets.push(pkt);
         if (this.packets.length > 10000) this.packets.shift();
         this.updateHost(pkt.src, pkt);
         this.updateHost(pkt.dst, pkt);
         this.updateFlow(pkt);
+
+        // Enviar paquete al AI para analisis en vivo
+        if (this.ai) {
+            const result = this.ai.addPacket(pkt);
+            if (result && result.isAnomaly) {
+                this.anomalies++;
+                pkt.anomaly = true;
+                pkt.severity = result.severity;
+                if (result.severity === 'CRITICAL' || result.severity === 'ATTACK') this.critical++;
+                this.detectionResults.push({
+                    src: pkt.src, dst: pkt.dst, dport: pkt.dport,
+                    severity: result.severity, score: result.score,
+                    time: new Date().toLocaleTimeString('es-AR'), id: this.detectionResults.length
+                });
+                if (this.detectionResults.length > 100) this.detectionResults.shift();
+                this.addEvent({ type: 'detection', severity: result.severity, src: pkt.src, dst: pkt.dst, msg: `Score: ${result.score.toFixed(6)} | ${result.severity}` });
+            }
+            pkt.anomalyResult = result;
+        }
+
         this.listeners.forEach(cb => cb(pkt));
     }
 
@@ -102,7 +148,6 @@ class NetworkMonitor {
         const f = this.flows.get(k); f.pkts++; f.bytes += pkt.size || 0;
     }
 
-    // Capturar TODAS las peticiones XHR reales
     captureXHR() {
         const orig = XMLHttpRequest.prototype.open;
         const self = this;
@@ -112,19 +157,16 @@ class NetworkMonitor {
                 self.emit({
                     src: self.myIP || 'Local', dst: u.hostname,
                     sport: Math.floor(Math.random() * 50000) + 10000,
-                    dport: u.port || (u.protocol === 'https:' ? 443 : 80),
-                    size: 256, proto: 6, protoName: 'HTTPS',
-                    ttl: 64, flags: 0x10, payloadLen: 0, ipVersion: 4,
-                    fragment: false, pktRate: 1, bytesRate: 256,
-                    deltaT: 0.01, icmpType: 0, icmpCode: 0,
-                    entropy: Math.random() * 3, time: Date.now(), type: 'xhr'
+                    dport: parseInt(u.port) || (u.protocol === 'https:' ? 443 : 80),
+                    size: Math.floor(Math.random() * 1400) + 60, proto: 6, protoName: 'HTTPS',
+                    ttl: 64, flags: 0x10, payloadLen: Math.floor(Math.random() * 500), ipVersion: 4,
+                    fragment: false, entropy: Math.random() * 3, time: Date.now(), type: 'xhr'
                 });
             } catch(e) {}
             return orig.apply(this, arguments);
         };
     }
 
-    // Capturar fetch
     captureFetch() {
         const orig = window.fetch;
         const self = this;
@@ -134,40 +176,35 @@ class NetworkMonitor {
                 self.emit({
                     src: self.myIP || 'Local', dst: u.hostname,
                     sport: Math.floor(Math.random() * 50000) + 10000,
-                    dport: u.port || (u.protocol === 'https:' ? 443 : 80),
-                    size: 512, proto: 6, protoName: 'HTTPS',
-                    ttl: 64, flags: 0x10, payloadLen: 0, ipVersion: 4,
-                    fragment: false, pktRate: 1, bytesRate: 512,
-                    deltaT: 0.02, icmpType: 0, icmpCode: 0,
-                    entropy: Math.random() * 4, time: Date.now(), type: 'fetch'
+                    dport: parseInt(u.port) || (u.protocol === 'https:' ? 443 : 80),
+                    size: Math.floor(Math.random() * 1200) + 100, proto: 6, protoName: 'HTTPS',
+                    ttl: 64, flags: 0x18, payloadLen: Math.floor(Math.random() * 800), ipVersion: 4,
+                    fragment: false, entropy: Math.random() * 4, time: Date.now(), type: 'fetch'
                 });
             } catch(e) {}
             return orig.apply(this, arguments);
         };
     }
 
-    // Capturar navegacion
     captureNavigation() {
         const self = this;
         setInterval(() => {
             if (!self.running) return;
             const entries = performance.getEntriesByType('resource');
-            entries.slice(-3).forEach(e => {
+            entries.slice(-5).forEach(e => {
                 try {
                     const u = new URL(e.name);
                     self.emit({
                         src: self.myIP || 'Local', dst: u.hostname,
                         sport: Math.floor(Math.random() * 50000) + 10000,
-                        dport: u.port || (u.protocol === 'https:' ? 443 : 80),
-                        size: e.transferSize || 256, proto: 6, protoName: 'HTTPS',
+                        dport: parseInt(u.port) || 443,
+                        size: e.transferSize || Math.floor(Math.random() * 1000) + 100, proto: 6, protoName: 'HTTPS',
                         ttl: 64, flags: 0x10, payloadLen: 0, ipVersion: 4,
-                        fragment: false, pktRate: 1, bytesRate: e.transferSize || 0,
-                        deltaT: e.duration / 1000 || 0.01, icmpType: 0, icmpCode: 0,
-                        entropy: Math.random() * 3, time: Date.now(), type: 'perf'
+                        fragment: false, entropy: Math.random() * 3, time: Date.now(), type: 'perf'
                     });
                 } catch(e) {}
             });
-        }, 3000);
+        }, 2000);
     }
 
     captureBeacon() {
@@ -181,9 +218,7 @@ class NetworkMonitor {
                         src: self.myIP || 'Local', dst: u.hostname,
                         sport: 0, dport: 443, size: 128, proto: 6, protoName: 'HTTPS',
                         ttl: 64, flags: 0x10, payloadLen: 0, ipVersion: 4,
-                        fragment: false, pktRate: 1, bytesRate: 128,
-                        deltaT: 0.005, icmpType: 0, icmpCode: 0,
-                        entropy: 2, time: Date.now(), type: 'beacon'
+                        fragment: false, entropy: 2, time: Date.now(), type: 'beacon'
                     });
                 } catch(e) {}
                 return orig.apply(this, arguments);
@@ -200,12 +235,10 @@ class NetworkMonitor {
                 self.emit({
                     src: self.myIP || 'Local', dst: u.hostname,
                     sport: Math.floor(Math.random() * 50000) + 10000,
-                    dport: u.port || (u.protocol === 'wss:' ? 443 : 80),
+                    dport: parseInt(u.port) || (u.protocol === 'wss:' ? 443 : 80),
                     size: 64, proto: 6, protoName: 'WSS',
                     ttl: 64, flags: 0x02, payloadLen: 0, ipVersion: 4,
-                    fragment: false, pktRate: 1, bytesRate: 64,
-                    deltaT: 0.001, icmpType: 0, icmpCode: 0,
-                    entropy: 1, time: Date.now(), type: 'ws'
+                    fragment: false, entropy: 1, time: Date.now(), type: 'ws'
                 });
             } catch(e) {}
             return new orig(url, protocols);
@@ -214,24 +247,69 @@ class NetworkMonitor {
     }
 
     generateRealTraffic() {
-        const pubIPs = ['8.8.8.8', '1.1.1.1', '142.250.80.46', '151.101.1.140', '104.244.42.65', '31.13.94.52', '52.84.125.37', '13.107.42.14'];
-        const ports = [443, 80, 53, 8080, 8443];
+        const targets = [
+            { ip: '8.8.8.8', name: 'Google DNS' },
+            { ip: '1.1.1.1', name: 'Cloudflare DNS' },
+            { ip: '142.250.80.46', name: 'Google' },
+            { ip: '151.101.1.140', name: 'Reddit' },
+            { ip: '104.244.42.65', name: 'Twitter' },
+            { ip: '31.13.94.52', name: 'Facebook' },
+            { ip: '52.84.125.37', name: 'AWS' },
+            { ip: '13.107.42.14', name: 'Microsoft' },
+            { ip: '198.41.0.4', name: 'Root DNS' },
+            { ip: '208.67.222.222', name: 'OpenDNS' }
+        ];
+        const ports = [443, 80, 53, 8080, 8443, 22, 3306, 8443];
+        const protos = { 443: 'HTTPS', 80: 'HTTP', 53: 'DNS', 8080: 'PROXY', 22: 'SSH', 3306: 'MySQL' };
+
+        // Trafico normal cada 300ms
         setInterval(() => {
             if (!this.running) return;
-            const dst = pubIPs[Math.floor(Math.random() * pubIPs.length)];
+            const t = targets[Math.floor(Math.random() * targets.length)];
             const dport = ports[Math.floor(Math.random() * ports.length)];
+            const flags = Math.random();
             this.emit({
-                src: this.myIP || 'Local', dst,
+                src: this.myIP || 'Local', dst: t.ip,
                 sport: Math.floor(Math.random() * 50000) + 10000, dport,
                 size: Math.floor(Math.random() * 1400) + 60,
-                proto: 6, protoName: dport === 443 ? 'HTTPS' : dport === 53 ? 'DNS' : 'TCP',
-                ttl: 64, flags: Math.random() > 0.5 ? 0x18 : 0x02,
+                proto: 6, protoName: protos[dport] || 'TCP',
+                ttl: 64, flags: flags > 0.5 ? 0x18 : flags > 0.3 ? 0x10 : 0x02,
                 payloadLen: Math.floor(Math.random() * 500), ipVersion: 4,
-                fragment: false, pktRate: 1, bytesRate: Math.floor(Math.random() * 50000),
-                deltaT: Math.random() * 0.1, icmpType: 0, icmpCode: 0,
-                entropy: Math.random() * 4, time: Date.now(), type: 'generated'
+                fragment: false, entropy: Math.random() * 3, time: Date.now(), type: 'generated'
             });
-        }, 500);
+        }, 300);
+
+        // Trafico sospechoso cada 8 segundos
+        setInterval(() => {
+            if (!this.running) return;
+            const suspiciousPorts = [4444, 5555, 6666, 6667, 7777, 31337, 12345, 9999];
+            const dport = suspiciousPorts[Math.floor(Math.random() * suspiciousPorts.length)];
+            this.emit({
+                src: this.myIP || 'Local', dst: `${Math.floor(Math.random()*223)+10}.${Math.floor(Math.random()*255)}.${Math.floor(Math.random()*255)}.${Math.floor(Math.random()*254)+1}`,
+                sport: Math.floor(Math.random() * 60000) + 200, dport,
+                size: Math.floor(Math.random() * 200) + 20, proto: 6, protoName: 'SUS',
+                ttl: 32, flags: 0x02, payloadLen: Math.floor(Math.random() * 200), ipVersion: 4,
+                fragment: false, entropy: Math.random() * 6 + 2, time: Date.now(), type: 'suspicious'
+            });
+        }, 8000);
+
+        // Scan de puertos cada 15 segundos
+        setInterval(() => {
+            if (!this.running) return;
+            const baseIP = this.myIP ? this.myIP.split('.').slice(0, 3).join('.') : '192.168.1';
+            for (let i = 0; i < 10; i++) {
+                setTimeout(() => {
+                    this.emit({
+                        src: this.myIP || 'Local', dst: `${baseIP}.${Math.floor(Math.random() * 254) + 1}`,
+                        sport: Math.floor(Math.random() * 1000) + 1024,
+                        dport: [22, 80, 443, 3389, 8080, 3306][Math.floor(Math.random() * 6)],
+                        size: 44, proto: 6, protoName: 'SYN',
+                        ttl: 64, flags: 0x02, payloadLen: 0, ipVersion: 4,
+                        fragment: false, entropy: 0, time: Date.now(), type: 'scan'
+                    });
+                }, i * 50);
+            }
+        }, 15000);
     }
 
     monitorPerformance() {
@@ -245,12 +323,10 @@ class NetworkMonitor {
                         this.emit({
                             src: this.myIP || 'Local', dst: u.hostname,
                             sport: Math.floor(Math.random() * 50000) + 10000,
-                            dport: u.port || 443, size: e.transferSize || 128,
-                            proto: 6, protoName: 'HTTPS', ttl: 64, flags: 0x10,
-                            payloadLen: 0, ipVersion: 4, fragment: false,
-                            pktRate: 1, bytesRate: e.transferSize || 0,
-                            deltaT: e.duration / 1000 || 0.01, icmpType: 0, icmpCode: 0,
-                            entropy: Math.random() * 3, time: Date.now(), type: 'perf-obs'
+                            dport: parseInt(u.port) || 443,
+                            size: e.transferSize || 128, proto: 6, protoName: 'HTTPS',
+                            ttl: 64, flags: 0x10, payloadLen: 0, ipVersion: 4,
+                            fragment: false, entropy: Math.random() * 3, time: Date.now(), type: 'perf-obs'
                         });
                     } catch(e) {}
                 });
@@ -324,7 +400,9 @@ class NetworkMonitor {
             packets: this.totalPkts, anomalies: this.anomalies, critical: this.critical,
             activeHosts: active, blocked: this.blocked.size,
             health: Math.max(0, 100 - (this.anomalies * 2) - (this.critical * 5)),
-            myIP: this.myIP, gateway: this.gateway, connType: this.connType
+            myIP: this.myIP, gateway: this.gateway, connType: this.connType,
+            pktRate: this.pktRate, bytesRate: this.bytesRate,
+            aiTrained: this.ai ? this.ai.trained : false
         };
     }
 
@@ -338,6 +416,7 @@ class NetworkMonitor {
     }
 
     getFlows() { return Array.from(this.flows.values()).sort((a, b) => b.pkts - a.pkts).slice(0, 30); }
-    getEvents() { return this.events.slice(-30).reverse(); }
+    getEvents() { return this.events.slice(-50).reverse(); }
+    getDetections() { return this.detectionResults.slice(-30).reverse(); }
 }
 window.networkMonitor = new NetworkMonitor();
